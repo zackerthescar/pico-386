@@ -1,0 +1,5 @@
+*.err
+*.exe
+*.o
+.direnv/
+flake.lock
