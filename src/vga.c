@@ -1,6 +1,6 @@
 #include "vga.h"
 
-#define WIDHT   320
+#define WIDTH   320
 #define HEIGHT  200
 
 void vga_init() {
@@ -19,6 +19,6 @@ void vga_ret() {
 
 void vga_set(unsigned short x, unsigned short y, unsigned short v) {
     unsigned char *VGA = (unsigned char *) 0xA0000000L;
-    unsigned short offset = x + 320 * y;
+    unsigned short offset = x + WIDTH * y;
     VGA[offset] = v;
 }

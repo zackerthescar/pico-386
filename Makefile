@@ -1,19 +1,25 @@
-CC 		= wcc
-LD		= wcl
-CFLAGS 	= -2 -fp2
-LFLAGS	= 
+CC 		= wcc386
+LD		= wcl386
+ASM		= nasm
+CFLAGS 	= -i=include -ecc -3 -fp3
+AFLAGS 	= -f obj
+LFLAGS	= -ecc -bt=dos -bc
 
-OBJS	= src/main.o src/serial.o src/vga.o
-SOURCE	= src/main.c src/serial.c src/vga.c
+OBJS	= src/main.o src/serial.o src/print.o src/vga.o
+C_SRC	= src/main.c src/print.c src/vga.c
+ASM_SRC	= src/serial.asm
 OUT		= dos/main.exe
 
 all: pico
 
 pico: $(OBJS)
-	$(LD) -fe=$(OUT) $^ $(LFLAGS)
+	$(LD) $(LFLAGS) -fe=$(OUT) $^ 
 
 %.o: %.c
-	$(CC) -fo=$@ -i=include $< $(CFLAGS) 
+	$(CC) $(CFLAGS) -fo=$@ $< 
+
+%.o: %.asm
+	$(ASM) $(AFLAGS) -o $@ $< 
 
 clean:
-	rm -rf $(OBJS) dos/*
+	rm -rf $(OBJS) dos/* *.err

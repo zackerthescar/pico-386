@@ -17,6 +17,7 @@
               open-watcom-v2
               minicom
               dosbox-x
+              nasm
             ];
           };
         };
