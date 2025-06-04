@@ -9,6 +9,8 @@
 #include "cart.h"
 
 int fd; // Globals are like, fine for this purpose. Bleh.
+PNG_Chunk ihdr;
+PNG_Chunk idat;
 
 static const unsigned char PNG_SIG[8] = {
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
@@ -23,6 +25,10 @@ int load_png(const char *filename) {
     return 0;
 }
 
+uint16_t read_be16(uint8_t* buf) {
+    return ((uint16_t) buf[0] << 8 ) | (uint16_t) buf[1];
+}
+
 uint32_t read_be32(uint8_t* buf) {
     return  ((uint32_t) buf[0] << 24) |
             ((uint32_t) buf[1] << 16) |
@@ -30,98 +36,94 @@ uint32_t read_be32(uint8_t* buf) {
             (uint32_t) buf[3];
 }
 
+int read_chunk(PNG_Chunk *chunk) {
+    int bytes_read;
+    char buf[8];
+    bytes_read = read(fd, buf, 8);
+    if (bytes_read != 8) {
+        debug_serial_print("Read error: Could not read chunk header\n");
+        return -1;
+    }
+    chunk->length = read_be32(buf);
+    memcpy(&chunk->type, buf + 4, 4);
+    chunk->data = malloc(sizeof(char) * chunk->length);
+    bytes_read = read(fd, chunk->data, chunk->length);
+    if (bytes_read != chunk->length) {
+        debug_serial_printf("Read error: Expected %d bytes, got %d bytes\n", chunk->length, bytes_read);
+        return -1;
+    }
+    // To-do: read these 4 bytes and CRC what we've read so far.
+    // for now we can assume our HDD and floppy emulators can store
+    // the image correctly. 
+    lseek(fd, 4, SEEK_CUR);
+    return 0;
+}
+
 int scan_cart() {
     int bytes_read;
     char *buf;
-    unsigned long chunk_length;
-    IHDR_Data ihdr;
     if (fd <= 0) {
-        return 1; // FD error
+        return -1; // FD error
     }
-    buf = malloc(sizeof(char) * 33);
-
     // Read header, check for valid .PNG file
+    buf = malloc(sizeof(char) * 33);
     bytes_read = read(fd, buf, 8);
     if (bytes_read != 8) {
         debug_serial_printf("Read error: Read only %d bytes from fd %d\n", bytes_read, fd);
         free(buf);
-        return 2;
+        return -2;
     }
     if (memcmp(buf, PNG_SIG, 8) != 0) {
         debug_serial_printf("Read error: Wrong PNG Header\n");
         free(buf);
-        return 3;
+        return -3;
     }
     debug_serial_printf("Valid PNG\n");
-
-    // Read IHDR chunk
-    bytes_read = read(fd, buf, 8);
-    if (bytes_read != 8) {
-        debug_serial_printf("Read error: Read only %d bytes from fd %d\n", bytes_read, fd);
+    if (read_chunk(&ihdr)                   // if IHDR chunk read error
+    || ihdr.length != 13                    // Or unexpected IHDR length
+    || memcmp(ihdr.type, "IHDR", 4) != 0    // Or not IHDR type
+    ) {
+        debug_serial_print("Invalid IHDR\n");
+        debug_serial_printf("%c%c%c%c\n", ihdr.type[0], ihdr.type[1], ihdr.type[2], ihdr.type[3]);
+        debug_serial_printf("%d\n", ihdr.length);
         free(buf);
-        return 4;
-    }
-    if (memcmp(buf + 4, "IHDR", 4) != 0) {
-        debug_serial_printf("Read error: First chunk is not IHDR\n");
-        free(buf);
-        return 5;
-    }
-    chunk_length = read_be32(buf);
-    if (chunk_length != 13) {
-        debug_serial_printf("Read error: Bad IHDR Header\n");
-        free(buf);
-        return 6;
-    }
-    debug_serial_printf("Valid IHDR Header\n");
-
-    // Read IHDR
-    bytes_read = read(fd, buf, 13);
-    if (bytes_read != 13) {
-        debug_serial_printf("Read error: Read only %d bytes from fd %d\n", bytes_read, fd);
-        free(buf);
-        return 7;
-    }
-    ihdr.width = read_be32(buf);
-    ihdr.height = read_be32(buf + 4);
-    ihdr.bit_depth = buf[8];
-    ihdr.color_type = buf[9];
-    if (ihdr.width != 160 || ihdr.height != 205 || ihdr.bit_depth != 8 || ihdr.color_type != 6) {
-        debug_serial_printf("Cart error: Not a valid cart\n");
-        debug_serial_printf("Expected 160x205, got %dx$d", ihdr.width, ihdr.height);
-        debug_serial_printf("Expected 8 bit and color type 6, got %d bit and color type %d\n", ihdr.bit_depth, ihdr.color_type);
-        free(buf);
-        return 8;
+        return -4;
     }
 
+    if (read_be32(ihdr.data) != 160     // If width is not 160
+    || read_be32(ihdr.data + 4) != 205  // Or height not 205
+    || ((int) ihdr.data[8]) != 8        // Or not 8-bit color
+    || ((int) ihdr.data[9]) != 6        // Or not RGBA type 6
+    ) {
+        debug_serial_print("Unexpected IHDR attributes!\n");
+        debug_serial_printf("Expecting 160x205 8 bit color type 6, got %dx%d %d bit color type %d\n", 
+            read_be32(ihdr.data), 
+            read_be32(ihdr.data + 4), 
+            ((int) ihdr.data[8]), 
+            ((int) ihdr.data[9]));
+        free(buf);
+        return -5;
+    }
     debug_serial_printf("Cartridge is a valid PICO-8 cartridge\n");
-
-    // To-do: come back to this when you've written a good ASM CRC32
-    // For now we can trust that our floppies/HDDs are good:tm:
-    lseek(fd, 4, SEEK_CUR);
-
-    bytes_read = read(fd, buf, 8);
-    if (bytes_read != 8) {
-        debug_serial_printf("Read error: IDAT chunk header bad\n");
-        free(buf);
-        return 9;
-    }
-
-    if (memcmp(buf + 4, "IDAT", 4) != 0) {
-        debug_serial_printf("Read error: bad IDAT chunk header\n");
-        free(buf);
-        return 10;
-    }
-
-    chunk_length = read_be32(buf);
-    debug_serial_printf("Read complete: Extracting %d bytes\n", chunk_length);
-    
     free(buf);
+    return 0;
+}
+
+int load_data() {
+    if (read_chunk(&idat)) {
+        debug_serial_printf("Read error: Could not load IDAT\n");
+        return -1;
+    }
+    debug_serial_printf("Read complete: Extracting %d bytes\n", idat.length);
     return 0;
 }
 
 void unload() {
     if (fd > 0) {
         close(fd);
-        return;
     }
+    if (idat.data) {
+        free(idat.data);
+    }
+    return;
 }

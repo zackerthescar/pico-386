@@ -1,16 +1,15 @@
 #include <stdint.h>
 
 typedef struct {
-    uint32_t width;
-    uint32_t height;
-    uint8_t bit_depth;
-    uint8_t color_type;
-    uint8_t compression;
-    uint8_t filter;
-    uint8_t interlace;
-} IHDR_Data; // PNG IHDR chunk
+    uint32_t length;
+    uint8_t type[4];
+    uint8_t *data;
+    // uint32_t crc32; We can ignore this for now...
+} PNG_Chunk; // PNG IDAT
 
 
 int load_png(const char *);
+int read_chunk();
 int scan_cart();
+int load_data();
 void unload();
