@@ -7,7 +7,7 @@
 
 
 void main(int argc, char *argv[]) {
-    int x;
+    int retval;
     debug_serial_init();
     debug_serial_print("Going into VGA int 13h...\n");
     vga_init();
@@ -17,7 +17,10 @@ void main(int argc, char *argv[]) {
     if (argc > 1) {
         debug_serial_printf("Loading cart %s\n", argv[1]);
         load_png(argv[1]);
-        scan_cart();
+        retval = scan_cart();
+        if (!retval) {
+            // load_data();
+        }
         debug_serial_print("Unloading cart...\n");
         unload();
     }

@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "serial.h"
 #include "cart.h"
@@ -22,11 +23,11 @@ int load_png(const char *filename) {
     return 0;
 }
 
-unsigned long read_be32(unsigned char* buf) {
-    return  ((unsigned long) buf[0] << 24) |
-            ((unsigned long) buf[1] << 16) |
-            ((unsigned long) buf[2] << 8) |
-            (unsigned long) buf[3];
+uint32_t read_be32(uint8_t* buf) {
+    return  ((uint32_t) buf[0] << 24) |
+            ((uint32_t) buf[1] << 16) |
+            ((uint32_t) buf[2] << 8) |
+            (uint32_t) buf[3];
 }
 
 int scan_cart() {
@@ -67,11 +68,11 @@ int scan_cart() {
     }
     chunk_length = read_be32(buf);
     if (chunk_length != 13) {
-        debug_serial_printf("Read error: Bad chunk length\n");
+        debug_serial_printf("Read error: Bad IHDR Header\n");
         free(buf);
         return 6;
     }
-    debug_serial_printf("Valid IHDR\n");
+    debug_serial_printf("Valid IHDR Header\n");
 
     // Read IHDR
     bytes_read = read(fd, buf, 13);
@@ -82,13 +83,38 @@ int scan_cart() {
     }
     ihdr.width = read_be32(buf);
     ihdr.height = read_be32(buf + 4);
-    if (ihdr.width != 160 || ihdr.height != 205) {
-        debug_serial_printf("Cart error: Bad PNG resolution\n");
+    ihdr.bit_depth = buf[8];
+    ihdr.color_type = buf[9];
+    if (ihdr.width != 160 || ihdr.height != 205 || ihdr.bit_depth != 8 || ihdr.color_type != 6) {
+        debug_serial_printf("Cart error: Not a valid cart\n");
         debug_serial_printf("Expected 160x205, got %dx$d", ihdr.width, ihdr.height);
+        debug_serial_printf("Expected 8 bit and color type 6, got %d bit and color type %d\n", ihdr.bit_depth, ihdr.color_type);
         free(buf);
         return 8;
     }
+
     debug_serial_printf("Cartridge is a valid PICO-8 cartridge\n");
+
+    // To-do: come back to this when you've written a good ASM CRC32
+    // For now we can trust that our floppies/HDDs are good:tm:
+    lseek(fd, 4, SEEK_CUR);
+
+    bytes_read = read(fd, buf, 8);
+    if (bytes_read != 8) {
+        debug_serial_printf("Read error: IDAT chunk header bad\n");
+        free(buf);
+        return 9;
+    }
+
+    if (memcmp(buf + 4, "IDAT", 4) != 0) {
+        debug_serial_printf("Read error: bad IDAT chunk header\n");
+        free(buf);
+        return 10;
+    }
+
+    chunk_length = read_be32(buf);
+    debug_serial_printf("Read complete: Extracting %d bytes\n", chunk_length);
+    
     free(buf);
     return 0;
 }

@@ -1,11 +1,13 @@
+#include <stdint.h>
+
 typedef struct {
-    unsigned long width;
-    unsigned long height;
-    unsigned char bit_depth;
-    unsigned char color_type;
-    unsigned char compression;
-    unsigned char filter;
-    unsigned char interlace;
+    uint32_t width;
+    uint32_t height;
+    uint8_t bit_depth;
+    uint8_t color_type;
+    uint8_t compression;
+    uint8_t filter;
+    uint8_t interlace;
 } IHDR_Data; // PNG IHDR chunk
 
 
