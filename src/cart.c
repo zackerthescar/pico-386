@@ -49,7 +49,8 @@ int read_chunk(PNG_Chunk *chunk) {
     chunk->data = malloc(sizeof(char) * chunk->length);
     bytes_read = read(fd, chunk->data, chunk->length);
     if (bytes_read != chunk->length) {
-        debug_serial_printf("Read error: Expected %d bytes, got %d bytes\n", chunk->length, bytes_read);
+        debug_serial_printf("Read error: Expected %d bytes, got %d bytes\n", 
+            chunk->length, bytes_read);
         return -1;
     }
     // To-do: read these 4 bytes and CRC what we've read so far.
@@ -69,7 +70,8 @@ int scan_cart() {
     buf = malloc(sizeof(char) * 33);
     bytes_read = read(fd, buf, 8);
     if (bytes_read != 8) {
-        debug_serial_printf("Read error: Read only %d bytes from fd %d\n", bytes_read, fd);
+        debug_serial_printf("Read error: Read only %d bytes from fd %d\n", 
+            bytes_read, fd);
         free(buf);
         return -2;
     }
@@ -84,8 +86,6 @@ int scan_cart() {
     || memcmp(ihdr.type, "IHDR", 4) != 0    // Or not IHDR type
     ) {
         debug_serial_print("Invalid IHDR\n");
-        debug_serial_printf("%c%c%c%c\n", ihdr.type[0], ihdr.type[1], ihdr.type[2], ihdr.type[3]);
-        debug_serial_printf("%d\n", ihdr.length);
         free(buf);
         return -4;
     }
@@ -121,6 +121,9 @@ int load_data() {
 void unload() {
     if (fd > 0) {
         close(fd);
+    }
+    if (ihdr.data) {
+        free(ihdr.data);
     }
     if (idat.data) {
         free(idat.data);
