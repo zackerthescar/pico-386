@@ -1,25 +1,24 @@
 CC 		= wcc386
-LD		= wcl386
+LD		= wlink
 ASM		= nasm
-CFLAGS 	= -i=include -ecc -3 -fp3
-AFLAGS 	= -f obj
+CFLAGS 	= -i=include -bt=dos -ecc -3r -fp3 -d2 -od
+AFLAGS 	= -f obj -g
 LFLAGS	= -ecc -bt=dos -bc
 
-OBJS	= src/main.o src/serial.o src/print.o src/vga.o
-C_SRC	= src/main.c src/print.c src/vga.c
-ASM_SRC	= src/serial.asm
+OBJS	= src/main.obj src/print.obj src/vga.obj src/cart.obj
+C_SRC	= src/main.c src/print.c src/vga.c src/cart.c
 OUT		= dos/main.exe
 
 all: pico
 
 pico: $(OBJS)
-	$(LD) $(LFLAGS) -fe=$(OUT) $^ 
+	$(LD) system dos4g debug all $(foreach obj,$(OBJS),file $(obj)) name $(OUT) 
 
-%.o: %.c
+%.obj: %.c
 	$(CC) $(CFLAGS) -fo=$@ $< 
 
-%.o: %.asm
+%.obj: %.asm
 	$(ASM) $(AFLAGS) -o $@ $< 
 
 clean:
-	rm -rf $(OBJS) dos/* *.err
+	rm -rf $(OBJS) dos/*.exe *.err

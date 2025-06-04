@@ -1,8 +1,10 @@
 # PICO-8 interpreter for IBM AT
 
-In early development. Aiming to run *most* PICO-8 games on the IBM AT
-with a 286 processor. Currently targeting a 286 with 512K + 2048K
-memory and VGA graphics.
+In early development. Aiming to run *most* PICO-8 games on the IBM
+compatibles with a 386+ processor. Currently targeting a 386 with 
+_ample_ memory and VGA graphics.
+
+Currently aiming to run cartridges, editor and other tooling later.
 
 # Developing
 

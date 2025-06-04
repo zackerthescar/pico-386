@@ -3,6 +3,7 @@
 
 #include "serial.h"
 #include "vga.h"
+#include "cart.h"
 
 
 void main(int argc, char *argv[]) {
@@ -10,14 +11,16 @@ void main(int argc, char *argv[]) {
     debug_serial_init();
     debug_serial_print("Going into VGA int 13h...\n");
     vga_init();
-    sleep(5);
     debug_serial_print("Setting some values...\n");
-    for (x = 0; x < 200; x++) {
-        vga_set(x, 128, 0x0A);
-        vga_set(x, 129, 0x0A);
-        vga_set(x, 130, 0x0A);
+    draw_bound_box();
+    sleep(1);
+    if (argc > 1) {
+        debug_serial_printf("Loading cart %s\n", argv[1]);
+        load_png(argv[1]);
+        scan_cart();
+        debug_serial_print("Unloading cart...\n");
+        unload();
     }
-    sleep(5);
     debug_serial_print("Returning from VGA int 13h...\n");
     vga_ret();
     return;
