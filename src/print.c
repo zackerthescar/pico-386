@@ -68,7 +68,8 @@ int debug_serial_printf(const char *format, ...) {
                     debug_serial_print(buffer);
                 }
                 case 'p': {
-                    debug_serial_print('0x');
+                    debug_serial_putchar('0');
+                    debug_serial_putchar('x');
                     num = (int) va_arg(args, void *);
                     itoa(num, buffer, 16);
                     debug_serial_print(buffer);
