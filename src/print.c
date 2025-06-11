@@ -4,21 +4,6 @@
 
 #include "serial.h"
 
-void debug_serial_init() {
-    outp(0x2F8 + 3, 0x80);
-    outp(0x2F8, 0x01);
-    outp(0x2F9, 0x00);
-    outp(0x2F8 + 3, 0x03);
-    outp(0x2F8 + 2, 0xC7);
-}
-
-void debug_serial_putchar(char c) {
-    while(!(inp(0x2F8 + 5) & 0x20)) {
-
-    }
-    outp(0x2F8, c);
-}
-
 void debug_serial_print(const char *str) {
     while (*str) {
         debug_serial_putchar(*str);
@@ -27,7 +12,7 @@ void debug_serial_print(const char *str) {
 }
 
 // This is really more of an exercise in "can we write a printf."
-// 
+// Only does the %c, %s, %i, %d, %x, and %p formats.
 int debug_serial_printf(const char *format, ...) {
     const char *p = format;
     char buffer[33];

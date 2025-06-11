@@ -2,7 +2,7 @@ CC 		= wcc386
 LD		= wlink
 ASM		= nasm
 CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3r -fp3
-AFLAGS 	= -f obj
+AFLAGS 	= -f coff
 LFLAGS	= -ecc -bt=dos -bc
 
 C_SRC	= 	src/main.c 					\
@@ -12,7 +12,9 @@ C_SRC	= 	src/main.c 					\
 			src/pxa_compress_snippets.c	\
 			src/p8_compress.c
 
-OBJS	= $(C_SRC:.c=.obj)
+ASM_SRC	=	src/serial.asm
+
+OBJS	= $(C_SRC:.c=.obj) $(ASM_SRC:.asm=.obj)
 OUT		= dos/MAIN.EXE
 
 # zlib stuff
