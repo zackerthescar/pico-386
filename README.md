@@ -40,5 +40,9 @@ then start developing. Use `debug_serial_print()` to print debug info.
 
 # Licensing
 
-This application is licensed as MIT, and uses `zlib` which is 2-clause
-BSD. 
+This application is licensed as MIT, and uses `zlib` which uses the
+`zlib` license. 
+
+Some code from (Lexaloffle)[https://github.com/dansanderson/lexaloffle]
+was used. `p8_compress.c` is licensed under the `zlib` license and
+`pxa_compress_snippets.c` is licensed under the MIT license. 
