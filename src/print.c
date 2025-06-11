@@ -66,6 +66,7 @@ int debug_serial_printf(const char *format, ...) {
                     num = va_arg(args, int);
                     itoa(num, buffer, 16);
                     debug_serial_print(buffer);
+                    break;
                 }
                 case 'p': {
                     debug_serial_putchar('0');
@@ -73,6 +74,7 @@ int debug_serial_printf(const char *format, ...) {
                     num = (int) va_arg(args, void *);
                     itoa(num, buffer, 16);
                     debug_serial_print(buffer);
+                    break;
                 }
                 // to-do: other variants
                 default: {

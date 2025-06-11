@@ -18,6 +18,24 @@ PNG_Chunk idat;
 uint8_t *decompressed_data;
 pix_t *fb;
 
+inline uint16_t read_be16(uint8_t* buf) {
+    return ((uint16_t) buf[0] << 8 ) | (uint16_t) buf[1];
+}
+
+inline uint32_t read_be32(uint8_t* buf) {
+    return  ((uint32_t) buf[0] << 24) |
+            ((uint32_t) buf[1] << 16) |
+            ((uint32_t) buf[2] << 8) |
+            (uint32_t) buf[3];
+}
+
+inline uint8_t pico8_byte(pix_t px) {
+    return ((px.a & 0x03) << 6) | 
+           ((px.r & 0x03) << 4) | 
+           ((px.g & 0x03) << 2) | 
+           ((px.b & 0x03));
+}
+
 static const unsigned char PNG_SIG[8] = {
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
 };
@@ -29,17 +47,6 @@ int load_png(const char *filename) {
         return -1;
     }
     return 0;
-}
-
-inline uint16_t read_be16(uint8_t* buf) {
-    return ((uint16_t) buf[0] << 8 ) | (uint16_t) buf[1];
-}
-
-inline uint32_t read_be32(uint8_t* buf) {
-    return  ((uint32_t) buf[0] << 24) |
-            ((uint32_t) buf[1] << 16) |
-            ((uint32_t) buf[2] << 8) |
-            (uint32_t) buf[3];
 }
 
 int read_chunk(PNG_Chunk *chunk) {
@@ -189,8 +196,7 @@ void fill_fb() {
 int load_data() {
     size_t buf_size = DECMP_BUF_SIZE;
     int result;
-    FILE *fp;
-    int x, y, pi;
+    int x;
     if (read_chunk(&idat)) {
         debug_serial_printf("Read error: Could not load IDAT\n");
         return -1;
@@ -211,15 +217,10 @@ int load_data() {
     fill_fb();
     free(decompressed_data);
     decompressed_data = 0;
-    fp = fopen("out.ppm", "w+");
-    fprintf(fp, "P3\n160 205\n255\n");
-    for (y = 0; y < 205; y++) {
-        for (x = 0; x < 160; x++) {
-            fprintf(fp, "%d %d %d ", fb[y * 160 + x].r, fb[y * 160 + x].g, fb[y * 160 + x].b);
-        }
-        fprintf(fp, "\n");
+    cart_data = malloc(160 * 205);
+    for (x = 0; x < 160 * 205; x++) {
+        cart_data[x] = pico8_byte(fb[x]);
     }
-    fclose(fp);
     return 0;
 }
 
@@ -235,6 +236,12 @@ void unload() {
     }
     if (decompressed_data) {
         free(decompressed_data);
+    }
+    if (fb) {
+        free(fb);
+    }
+    if (cart_data) {
+        free(cart_data);
     }
     return;
 }

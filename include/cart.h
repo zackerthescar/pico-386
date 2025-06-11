@@ -1,5 +1,10 @@
 #include <stdint.h>
 
+#ifndef _CART_H
+#define _CART_H
+
+extern uint8_t *cart_data;
+
 typedef struct {
     uint32_t length;
     uint8_t type[4];
@@ -20,3 +25,5 @@ int scan_cart();
 int load_data();
 void apply_filters();
 void unload();
+
+#endif

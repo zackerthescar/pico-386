@@ -5,8 +5,14 @@ CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3r -fp3
 AFLAGS 	= -f obj
 LFLAGS	= -ecc -bt=dos -bc
 
-OBJS	= src/main.obj src/print.obj src/vga.obj src/cart.obj
-C_SRC	= src/main.c src/print.c src/vga.c src/cart.c
+C_SRC	= 	src/main.c 					\
+			src/print.c					\
+			src/vga.c					\
+			src/cart.c 					\
+			src/pxa_compress_snippets.c	\
+			src/p8_compress.c
+
+OBJS	= $(C_SRC:.c=.obj)
 OUT		= dos/MAIN.EXE
 
 # zlib stuff
