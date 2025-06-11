@@ -4,13 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <zlib.h>
 
 #include "serial.h"
 #include "cart.h"
 
+#define DECMP_BUF_SIZE 205 * 160 * 4 + 205
+
 int fd; // Globals are like, fine for this purpose. Bleh.
 PNG_Chunk ihdr;
 PNG_Chunk idat;
+uint8_t *decompressed_data;
 
 static const unsigned char PNG_SIG[8] = {
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
@@ -25,11 +29,11 @@ int load_png(const char *filename) {
     return 0;
 }
 
-uint16_t read_be16(uint8_t* buf) {
+inline uint16_t read_be16(uint8_t* buf) {
     return ((uint16_t) buf[0] << 8 ) | (uint16_t) buf[1];
 }
 
-uint32_t read_be32(uint8_t* buf) {
+inline uint32_t read_be32(uint8_t* buf) {
     return  ((uint32_t) buf[0] << 24) |
             ((uint32_t) buf[1] << 16) |
             ((uint32_t) buf[2] << 8) |
@@ -110,11 +114,22 @@ int scan_cart() {
 }
 
 int load_data() {
+    size_t buf_size = DECMP_BUF_SIZE;
+    int result;
+    
     if (read_chunk(&idat)) {
         debug_serial_printf("Read error: Could not load IDAT\n");
         return -1;
     }
     debug_serial_printf("Read complete: Extracting %d bytes\n", idat.length);
+    decompressed_data = malloc(DECMP_BUF_SIZE);
+    result = uncompress(decompressed_data, (uLongf *) &buf_size, idat.data, idat.length);
+    if(result != Z_OK) {
+        debug_serial_printf("zlib fail with error code: %d\n", result);
+        free(decompressed_data);
+        return -1;
+    }
+    debug_serial_printf("Decompression successful, got %d bytes\n", buf_size);
     return 0;
 }
 
