@@ -1,8 +1,8 @@
 CC 		= wcc386
 LD		= wlink
 ASM		= nasm
-CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3r -fp3 -d2 -od
-AFLAGS 	= -f obj -g
+CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3r -fp3
+AFLAGS 	= -f obj
 LFLAGS	= -ecc -bt=dos -bc
 
 OBJS	= src/main.obj src/print.obj src/vga.obj src/cart.obj
@@ -34,7 +34,7 @@ ZLIB_OBJS = $(ZLIB_SOURCES:.c=.obj)
 all: pico
 
 pico: $(OBJS) $(ZLIB_LIB)
-	$(LD) system dos4g debug all $(foreach obj,$^,file $(obj)) name $(OUT)
+	$(LD) system dos4g $(foreach obj,$^,file $(obj)) name $(OUT)
 
 $(ZLIB_LIB): $(ZLIB_OBJS)
 	wlib -b -c $(ZLIB_LIB) $(foreach obj,$(ZLIB_OBJS),-+$(obj))
