@@ -5,7 +5,6 @@
 #include <string.h>
 #include <stdint.h>
 #include <zlib.h>
-#include <stdio.h>
 
 #include "serial.h"
 #include "cart.h"

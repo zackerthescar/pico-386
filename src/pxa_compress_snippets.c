@@ -31,7 +31,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "codedecomp.h"
+#include "pico8.h"
 
 // 3 3 5 4  (gives balanced trees for typical data)
 

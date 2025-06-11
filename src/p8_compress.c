@@ -28,7 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "codedecomp.h"
+#include "pico8.h"
 
 #ifndef MAX
 	#define MAX(x, y) (((x) > (y)) ? (x) : (y))

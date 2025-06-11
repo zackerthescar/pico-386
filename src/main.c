@@ -1,14 +1,11 @@
 #include <stdio.h>
 #include <unistd.h>
-
-#include <fcntl.h>
-#include <io.h>
-#include <sys/stat.h>
 #include <stdlib.h>
 
 #include "serial.h"
 #include "vga.h"
 #include "cart.h"
+#include "pico8.h"
 
 uint8_t *cart_data;
 uint8_t *lua_code;
@@ -30,7 +27,7 @@ void main(int argc, char *argv[]) {
             if (retval) {
                 debug_serial_printf("pico8_decomp error: %d\n", retval);
             };
-            
+            debug_serial_printf("%s\n", lua_code);
         }
         debug_serial_print("Unloading cart...\n");
         if (lua_code) free(lua_code);
