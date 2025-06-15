@@ -6,3 +6,8 @@ flake.lock
 *.obj
 dos/
 zlib/
+86Box/
+*.out
+*.yy.c
+*.tab.*
+*.output
