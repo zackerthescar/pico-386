@@ -18,6 +18,8 @@
               minicom
               dosbox-x
               nasm
+              flex
+              bison
             ];
           };
         };
