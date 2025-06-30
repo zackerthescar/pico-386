@@ -54,7 +54,7 @@ src/%.obj: src/%.asm
 	$(ASM) $(AFLAGS) -o $@ $< 
 
 $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c
-	$(CC) -bt=dos -3r -fp3 -ecc -od -fo=$@ $< 
+	$(CC) -bt=dos -3r -fp3 -ecc -os -fo=$@ $< 
 
 clean:
 	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) dos/*.exe *.err

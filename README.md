@@ -46,3 +46,9 @@ This application is licensed as MIT, and uses `zlib` which uses the
 Some code from (Lexaloffle)[https://github.com/dansanderson/lexaloffle]
 was used. `p8_compress.c` is licensed under the `zlib` license and
 `pxa_compress_snippets.c` is licensed under the MIT license. 
+
+NOTE: While `zepto8/doc/PICO-8-language.md` was used as a reference to
+develop my own lexer and parser, no code from the rest of the repo
+was referenced or looked at. This is important as even looking at the
+rest of this repo can "taint" the project with code that is not 
+compatible with the MIT license.
