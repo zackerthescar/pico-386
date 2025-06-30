@@ -1,9 +1,18 @@
 CC 		= wcc386
-LD		= wlink
-ASM		= nasm
 CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3r -fp3
+
+
+ASM		= nasm
 AFLAGS 	= -f coff
+
+LEX		= flex
+YACC 	= bison
+
+LD		= wlink
 LFLAGS	= -ecc -bt=dos -bc
+
+PARSER_Y	=	src/parser/parser.y
+LEXER_L		=	src/parser/lexer.lex
 
 C_SRC	= 	src/main.c 					\
 			src/print.c					\
@@ -13,6 +22,15 @@ C_SRC	= 	src/main.c 					\
 			src/p8_compress.c
 
 ASM_SRC	=	src/serial.asm
+
+PARSER_C	= 	src/parser.tab.c
+PARSER_H	= 	include/parser.tab.h
+PARSER_OUT	= 	src/parser/parser.output
+LEXER_C		=	src/lex.yy.c
+LEXER_H		=	include/lex.yy.h
+
+PARSER_OBJ 	=	src/parser.tab.obj
+LEXER_OBJ  	=	src/lex.yy.obj
 
 OBJS	= $(C_SRC:.c=.obj) $(ASM_SRC:.asm=.obj)
 OUT		= dos/MAIN.EXE
@@ -41,11 +59,25 @@ ZLIB_OBJS = $(ZLIB_SOURCES:.c=.obj)
 
 all: pico
 
-pico: $(OBJS) $(ZLIB_LIB)
+pico: $(ZLIB_LIB) $(PARSER_OBJ) $(LEXER_OBJ) $(OBJS)
 	$(LD) system dos4g $(foreach obj,$^,file $(obj)) name $(OUT)
 
 $(ZLIB_LIB): $(ZLIB_OBJS)
 	wlib -b -c $(ZLIB_LIB) $(foreach obj,$(ZLIB_OBJS),-+$(obj))
+
+$(PARSER_OBJ): $(PARSER_C)
+	$(CC) $(CFLAGS) -fo=$@ $<
+
+$(LEXER_OBJ): $(LEXER_C)
+	$(CC) $(CFLAGS) -fo=$@ $<
+
+$(PARSER_C): $(PARSER_Y)
+	$(YACC) $(YFLAGS) -o $@ --header=$(PARSER_H) $<
+
+$(LEXER_C): $(LEXER_L) $(PARSER_H)
+	$(LEX) -o $@ --header-file=$(LEXER_H) $<
+
+$(PARSER_H): $(PARSER_C)
 
 src/%.obj: src/%.c
 	$(CC) $(CFLAGS) -fo=$@ $< 
@@ -57,6 +89,9 @@ $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c
 	$(CC) -bt=dos -3r -fp3 -ecc -os -fo=$@ $< 
 
 clean:
-	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) dos/*.exe *.err
+	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) dos/*.exe *.err \
+		$(PARSER_C) $(PARSER_H) $(PARSER_OUT) $(LEXER_C) \
+		$(PARSER_OBJ) $(LEXER_OBJ) $(LEXER_H)
+
 
 .PHONY: all clean pico
