@@ -6,12 +6,16 @@
 #include "vga.h"
 #include "cart.h"
 #include "pico8.h"
+#include "parser.tab.h"
+#include "lex.yy.h"
 
 uint8_t *cart_data;
 uint8_t *lua_code;
 
 void main(int argc, char *argv[]) {
     int retval;
+    YY_BUFFER_STATE buffer;
+    int parse_result;
     debug_serial_init();
     debug_serial_print("Going into VGA int 13h...\n");
     vga_init();
@@ -27,7 +31,14 @@ void main(int argc, char *argv[]) {
             if (retval) {
                 debug_serial_printf("pico8_decomp error: %d\n", retval);
             };
-            debug_serial_printf("%s\n", lua_code);
+            buffer = yy_scan_string(lua_code);
+            parse_result = yyparse();
+            yy_delete_buffer(buffer);
+            if (parse_result == 0) {
+                debug_serial_print("Successfully parsed code\n");
+            } else {
+                debug_serial_print("Parsing error\n");
+            }
         }
         debug_serial_print("Unloading cart...\n");
         if (lua_code) free(lua_code);
