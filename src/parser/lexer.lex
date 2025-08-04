@@ -26,6 +26,9 @@ int last_was_operand = 0; // track unary vs binary
 
 "^^="           { last_was_operand = 0; return XOR_AS; }
 "\\="           { last_was_operand = 0; return NOT_AS; }
+
+"//".*          { /* ignore single line comments */ }
+
 "&="            { last_was_operand = 0; return AND_AS; }
 "|="            { last_was_operand = 0; return  OR_AS; }
 
@@ -202,11 +205,13 @@ int last_was_operand = 0; // track unary vs binary
         }
     }
 }
+
 0b[0-1]+        { 
     last_was_operand = 1;
     yylval.num = strtol(yytext, NULL, 2); 
     return NUMBER; 
 }
+
 0x[0-9a-fA-F]+  { 
     last_was_operand = 1;
     yylval.num = strtol(yytext, NULL, 16); 

@@ -11,3 +11,4 @@ zlib/
 *.yy.c
 *.tab.*
 *.output
+*.p8

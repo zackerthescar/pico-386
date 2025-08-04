@@ -1,6 +1,7 @@
 %{
 #include <stdio.h>
 #include <stdlib.h>
+#define YYDEBUG 1
 int yylex(void);
 void yyerror(const char *s);
 extern int yymylineno;
@@ -49,7 +50,6 @@ extern int yymylineno;
 %right UMINUS NOT '#' '~' '@' PEEK '$'
 %right '^'
 
-
 %%
 
 chunk:  block;
@@ -66,7 +66,7 @@ stat_list:  stat
 
 stat:   ';'
     |   varlist '=' explist
-    |   var compop exp
+    |   compassign
     |   functioncall
     |   '?'
     |   '?' explist
@@ -86,6 +86,7 @@ stat:   ';'
     |   LOCAL FUNCTION IDENTIFIER funcbody
     |   LOCAL namelist
     |   LOCAL namelist '=' explist
+    |   LOCAL compassign
     ;
 
 elif_list:  
@@ -132,16 +133,14 @@ exp:    NIL
     |   FALSE
     |   TRUE
     |   NUMBER
-    |   NUMBER '.' NUMBER // terrible terrible temp hack to get a working parser
-	|	'.' NUMBER // another terrible hack
     |   STRING
     |   VARARGS
     |   functiondef
     |   prefixexp
     |   tableconstructor
-    |   exp binop exp
-    |   unop exp
-    |   '(' exp ')'
+    |   binopexp
+    |   unopexp
+    ;
 
 prefixexp:  var
         |   functioncall
@@ -150,9 +149,11 @@ prefixexp:  var
 
 functioncall:   prefixexp args
             |   prefixexp ':' IDENTIFIER args
+            ;
 
 args:   '(' ')'
     |   '(' explist ')'
+    |	tableconstructor
     |   STRING
     ;
 
@@ -186,40 +187,62 @@ fieldsep:
         |   ';'
         ;
 
-binop:  '+' | '-' | '*' | '/' | '^' | '%' | '\\'
-    |   XOR | '&' | '|' | ARS | LLS | LRS | RLS
-    |   CAT | '<' | LEQ | '>' | GEQ | EQL | NEQ
-    |   AND | OR
-    ;
-
-compop:     PLUS_AS
-        |   MINUS_AS
-        |   MUL_AS
-        |   DIV_AS
-        |   POW_AS
-        |   MOD_AS
-        |   NOT_AS
-        |   XOR_AS
-        |   AND_AS
-        |    OR_AS 
-        |   ARS_AS
-        |   LRS_AS
-        |   LLS_AS
-        |   RLS_AS
-        |   CON_AS
+binopexp:   exp '+' exp
+        |   exp '-' exp
+        |   exp '*' exp
+        |   exp '/' exp
+        |   exp '^' exp
+        |   exp '%' exp
+        |   exp '\\' exp
+        |   exp XOR exp
+        |   exp '&' exp
+        |   exp '|' exp
+        |   exp ARS exp
+        |   exp LLS exp
+        |   exp LRS exp
+        |   exp RLS exp
+        |   exp CAT exp
+        |   exp '<' exp
+        |   exp LEQ exp
+        |   exp '>' exp
+        |   exp GEQ exp
+        |   exp EQL exp
+        |   exp NEQ exp
+        |   exp AND exp
+        |   exp  OR exp
         ;
 
-unop:   UMINUS
-    |   PEEK
-    |   NOT
-    |   '#'
-    |   '~'
-    |   '@'
-    |   '%'
-    |   '$'
+unopexp:   UMINUS exp
+        |   PEEK exp
+        |   NOT exp
+        |   '#' exp
+        |   '~' exp
+        |   '@' exp
+        |   '%' exp
+        |   '$' exp
     ;
+
+compassign:     var PLUS_AS exp
+            |   var MINUS_AS exp
+            |   var MUL_AS exp
+            |   var DIV_AS exp
+            |   var POW_AS exp
+            |   var MOD_AS exp
+            |   var NOT_AS exp
+            |   var XOR_AS exp
+            |   var AND_AS exp
+            |   var  OR_AS exp
+            |   var ARS_AS exp
+            |   var LRS_AS exp
+            |   var LLS_AS exp
+            |   var RLS_AS exp
+            |   var CON_AS exp
+        ;
+
+
 %%
 
 void yyerror(const char *s) {
     fprintf(stderr, "Error: %s at line %d\n", s, yymylineno);
 }
+

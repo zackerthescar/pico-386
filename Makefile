@@ -79,7 +79,9 @@ $(LEXER_C): $(LEXER_L) $(PARSER_H)
 
 $(PARSER_H): $(PARSER_C)
 
-src/%.obj: src/%.c
+$(LEXER_H): $(LEXER_C)
+
+src/%.obj: src/%.c $(LEXER_H)
 	$(CC) $(CFLAGS) -fo=$@ $< 
 
 src/%.obj: src/%.asm
@@ -89,7 +91,7 @@ $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c
 	$(CC) -bt=dos -3r -fp3 -ecc -os -fo=$@ $< 
 
 clean:
-	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) dos/*.exe *.err \
+	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) dos/MAIN.exe *.err \
 		$(PARSER_C) $(PARSER_H) $(PARSER_OUT) $(LEXER_C) \
 		$(PARSER_OBJ) $(LEXER_OBJ) $(LEXER_H)
 

@@ -21,9 +21,10 @@ PARSER_OUTPUT = parser.output
 LEXER_C = lex.yy.c
 
 # Object files
-PARSER_OBJ = parser.tab.obj
-LEXER_OBJ = lex.yy.obj
-OBJS = $(PARSER_OBJ) $(LEXER_OBJ)
+PARSER_OBJ = parser.tab.o
+LEXER_OBJ = lex.yy.o
+C_SRC = main.c
+OBJS = $(PARSER_OBJ) $(LEXER_OBJ) main.o
 
 all: parser
 
@@ -57,6 +58,6 @@ $(PARSER_H): $(PARSER_C)
 
 clean:
 	rm -rf *.exe *.err $(PARSER_C) $(PARSER_H) $(PARSER_OUTPUT) \
-	$(LEXER_OBJ) $(PARSER_OBJ) $(LEXER_C)
+	$(LEXER_OBJ) $(PARSER_OBJ) $(LEXER_C) parser
 
 .PHONY: all clean parser

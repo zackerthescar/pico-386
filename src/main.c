@@ -31,6 +31,7 @@ void main(int argc, char *argv[]) {
             if (retval) {
                 debug_serial_printf("pico8_decomp error: %d\n", retval);
             };
+            debug_serial_print(lua_code);
             buffer = yy_scan_string(lua_code);
             parse_result = yyparse();
             yy_delete_buffer(buffer);
