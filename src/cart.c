@@ -11,7 +11,8 @@
 
 #define DECMP_BUF_SIZE 205 * 160 * 4 + 205
 
-int fd; // Globals are like, fine for this purpose. Bleh.
+uint8_t *cart_data;
+int fd;
 PNG_Chunk ihdr;
 PNG_Chunk idat;
 uint8_t *decompressed_data;

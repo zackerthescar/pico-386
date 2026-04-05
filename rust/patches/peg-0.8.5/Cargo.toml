@@ -1,0 +1,23 @@
+# Minimal patched peg-0.8.5: adds #![no_std] + extern crate alloc to lib.rs
+# See upstream: https://github.com/kevinmehall/rust-peg (MIT license)
+
+[package]
+name = "peg"
+version = "0.8.5"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = ["peg-runtime/std"]
+trace = ["peg-macros/trace"]
+unstable = ["peg-runtime/unstable"]
+
+[lib]
+name = "peg"
+path = "src/lib.rs"
+
+[dependencies.peg-macros]
+version = "= 0.8.5"
+
+[dependencies.peg-runtime]
+version = "= 0.8.5"

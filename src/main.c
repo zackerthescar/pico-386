@@ -1,40 +1,42 @@
-#include <stdio.h>
 #include <unistd.h>
-#include <stdlib.h>
+#include <string.h>
 
-#include "serial.h"
+#include "pico386.h"
 #include "vga.h"
-#include "cart.h"
-#include "pico8.h"
+#include "mem.h"
 
-uint8_t *cart_data;
-uint8_t *lua_code;
+P8Ram p8_ram;
 
 void main(int argc, char *argv[]) {
-    int retval;
+    P386_Cart cart = {0};
+
     debug_serial_init();
-    debug_serial_print("Going into VGA int 13h...\n");
+    debug_serial_print("Initializing VGA Mode X 320x400...\n");
+
+    /* Zero PICO-8 RAM */
+    memset(&p8_ram, 0, sizeof(p8_ram));
+
     vga_init();
-    debug_serial_print("Drawing PICO-8 Window\n");
-    draw_bound_box();
+
     if (argc > 1) {
-        debug_serial_printf("Loading cart %s\n", argv[1]);
-        load_png(argv[1]);
-        if (!scan_cart() && !load_data()) {
-            debug_serial_printf("Game data at %p\n", cart_data);
-            lua_code = malloc(0x10001);
-            retval = pico8_code_section_decompress(cart_data + 0x4300, lua_code, 0x10000);
-            if (retval) {
-                debug_serial_printf("pico8_decomp error: %d\n", retval);
-            };
-            debug_serial_printf("%s\n", lua_code);
+        if (p386_cart_load(&cart, argv[1]) == 0) {
+            debug_serial_printf("%s\n", cart.lua_code);
+            p386_cart_compile(&cart);
+
+            /* Copy cart sprite/map/flag/sfx/music data into PICO-8 RAM */
+            if (cart.cart_data) {
+                memcpy(p8_ram.raw, cart.cart_data, 0x4300);
+            }
+
+            /* Test blit: render whatever is in the screen buffer */
+            vga_blit(p8_ram.mem.screen);
+            vga_flip();
         }
         debug_serial_print("Unloading cart...\n");
-        if (lua_code) free(lua_code);
-        unload();
+        p386_cart_free(&cart);
     }
-    sleep(1);
-    debug_serial_print("Returning from VGA int 13h...\n");
+
+    sleep(3);
+    debug_serial_print("Returning to text mode...\n");
     vga_ret();
-    return;
 }
