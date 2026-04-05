@@ -7,7 +7,7 @@ flake.lock
 dos/
 zlib/
 *.log
-*.png
+/*.png
 *.img
 .claude
 CLAUDE.md
