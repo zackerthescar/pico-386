@@ -6,3 +6,8 @@ flake.lock
 *.obj
 dos/
 zlib/
+*.log
+*.png
+*.img
+.claude
+CLAUDE.md
