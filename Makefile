@@ -76,6 +76,9 @@ RUST_OBJS = $(wildcard $(RUST_OBJS_DIR)/*.o)
 
 all: pico
 
+layout-check:
+	python3 tools/gen_p386_layout.py --check
+
 dos:
 	mkdir -p dos
 
@@ -139,16 +142,19 @@ $(ZLIB_LIB): $(ZLIB_DIR)/zconf.h
 	$(MAKE) $(ZLIB_OBJS)
 	wlib -b -c $(ZLIB_LIB) $(foreach obj,$(ZLIB_OBJS),-+$(obj))
 
-src/%.obj: src/%.c $(ZLIB_DIR)/zconf.h
+src/%.obj: src/%.c $(ZLIB_DIR)/zconf.h include/p386_layout.h
 	$(CC) $(CFLAGS) -fo=$@ $<
 
+include/p386_layout.h src/p386_layout.inc: tools/gen_p386_layout.py tools/p386_layout.py
+	python3 tools/gen_p386_layout.py
+
 # asm builds as ELF32 — wlink consumes it alongside OMF C objects.
-src/%.obj: src/%.asm
+src/%.obj: src/%.asm src/p386_layout.inc
 	$(ASM) $(AFLAGS) -o $@ $<
 
 # Test main includes other test .c files directly, so depend on all of them
 TEST_DEPS = $(wildcard test/*.c)
-test/%.obj: test/%.c $(TEST_DEPS)
+test/%.obj: test/%.c $(TEST_DEPS) include/p386_layout.h
 	$(CC) $(CFLAGS) -i=test -fo=$@ $<
 
 $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c $(ZLIB_DIR)/zconf.h
@@ -159,4 +165,4 @@ clean:
 	cd rust && cargo clean
 
 FORCE:
-.PHONY: all clean pico test vm-test vga-test FORCE
+.PHONY: all clean pico test vm-test vga-test layout-check FORCE

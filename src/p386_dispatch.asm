@@ -1,38 +1,6 @@
 [BITS 32]
 
-%define VM_STATUS       0
-%define VM_ERROR_MSG    4
-%define VM_LAST_OPCODE  8
-%define VM_PROGRAM      12
-%define LP_BUF 0
-%define LP_STRING_ENTRIES 12
-%define LP_BYTECODE_SECTION 16
-%define VM_VALUE_STACK  32
-%define VM_BASE         32800
-%define VM_TOP          32804
-%define VM_GLOBALS      32812
-%define VM_CURRENT_PROTO 34860
-%define VM_IP           34864
-
-%define PE_BYTECODE_OFF 0
-%define PE_BYTECODE_LEN 4
-%define PE_CONSTS_OFF   8
-%define PE_N_CONSTS     16
-
-%define TAG_NIL  0
-%define TAG_BOOL 1
-%define TAG_NUM  2
-%define TAG_STR  3
-%define TAG_TAB  4
-%define TAG_FUNC 5
-%define TAG_CFUNC 6
-
-%define VM_HALTED 1
-%define ERR_OPCODE -2
-%define ERR_TYPE   -3
-%define ERR_DIV0   -4
-%define ERR_BOUNDS -5
-%define ERR_UNIMPL -6
+%include "src/p386_layout.inc"
 
 section .rodata
 msg_bad_opcode db 'bad opcode',0

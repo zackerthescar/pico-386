@@ -57,6 +57,8 @@ typedef struct P386VMState {
 } P386VMState;
 #pragma pack(pop)
 
+#include "p386_layout.h"
+
 int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out);
 void p386_vm_init(P386VMState *vm);
 int p386_vm_load(P386VMState *vm, const uint8_t *buf, uint32_t size);
