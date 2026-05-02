@@ -203,3 +203,84 @@ TEST(vm_division_by_zero_traps) {
     ASSERT_EQ(P386_VM_ERR_DIV0, run_fixture(&f, &vm));
     PASS();
 }
+
+TEST(vm_idiv_mod_truncate) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(7), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(2), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_IDIV, 0, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_MOD,  1, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 3, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(3));
+    ASSERT_NUM(vm, 1, P386_FP_INT(1));
+    PASS();
+}
+
+TEST(vm_pow_integer_exponent) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(3), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(4), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_POW, 0, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(81));
+    PASS();
+}
+
+TEST(vm_bitwise_and_or_xor_not) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(0x6), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(0x3), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_BAND, 0, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_BOR,  1, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_BXOR, 2, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_BNOT, 3, P386_RK_CONST(0), 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 5, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(2));
+    ASSERT_NUM(vm, 1, P386_FP_INT(7));
+    ASSERT_NUM(vm, 2, P386_FP_INT(5));
+    ASSERT_NUM(vm, 3, P386_FP_INT(~6));
+    PASS();
+}
+
+TEST(vm_shifts_and_rotates) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(0x10), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(2), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(-8), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_SHL,  0, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_SHR,  1, P386_RK_CONST(2), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_LSHR, 2, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_ROTL, 3, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_ROTR, 4, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 6, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(0x40));
+    ASSERT_NUM(vm, 1, P386_FP_INT(-2));
+    ASSERT_NUM(vm, 2, P386_FP_INT(0x4));
+    ASSERT_NUM(vm, 3, P386_FP_INT(0x40));
+    ASSERT_NUM(vm, 4, P386_FP_INT(0x4));
+    PASS();
+}
+
+TEST(vm_idiv_div_zero_traps) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(5), P386_TAG_NUM);
+    fx_const(&f, 0, P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_MOD, 0, P386_RK_CONST(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 2, 0));
+    ASSERT_EQ(P386_VM_ERR_DIV0, run_fixture(&f, &vm));
+    PASS();
+}

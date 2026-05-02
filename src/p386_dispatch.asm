@@ -61,8 +61,32 @@ dispatch_table:
     dd op_mul
 %elif i = 0x23
     dd op_div
+%elif i = 0x24
+    dd op_idiv
+%elif i = 0x25
+    dd op_mod
+%elif i = 0x26
+    dd op_pow
 %elif i = 0x27
     dd op_neg
+%elif i = 0x28
+    dd op_band
+%elif i = 0x29
+    dd op_bor
+%elif i = 0x2A
+    dd op_bxor
+%elif i = 0x2B
+    dd op_bnot
+%elif i = 0x2C
+    dd op_shl
+%elif i = 0x2D
+    dd op_shr
+%elif i = 0x2E
+    dd op_lshr
+%elif i = 0x2F
+    dd op_rotl
+%elif i = 0x30
+    dd op_rotr
 %elif i = 0x31
     dd op_eq
 %elif i = 0x32
@@ -264,10 +288,111 @@ op_setglobal:
     idiv ebx
 %endmacro
 
+%macro DO_IDIV 0
+    test ebx, ebx
+    jz err_div0
+    cdq
+    idiv ebx                    ; eax = trunc(a/b) (raw fp/fp)
+    shl eax, 16                 ; back to fp
+%endmacro
+%macro DO_MOD 0
+    test ebx, ebx
+    jz err_div0
+    cdq
+    idiv ebx                    ; edx = remainder (already fp-scaled)
+    mov eax, edx
+%endmacro
+%macro DO_POW 0
+    sar ebx, 16                  ; integer exponent
+    mov ecx, ebx
+    test ecx, ecx
+    jle %%pow_one
+    mov ebx, eax                 ; ebx = base (fp)
+    mov eax, 0x10000             ; result = 1.0 (fp)
+%%pow_loop:
+    imul ebx                     ; edx:eax = result*base, raw fp*fp
+    shrd eax, edx, 16            ; renormalize fp
+    dec ecx
+    jnz %%pow_loop
+    jmp %%pow_done
+%%pow_one:
+    mov eax, 0x10000             ; b<=0 -> 1.0 (sketch)
+%%pow_done:
+%endmacro
+%macro DO_BAND 0
+    sar eax, 16
+    sar ebx, 16
+    and eax, ebx
+    shl eax, 16
+%endmacro
+%macro DO_BOR 0
+    sar eax, 16
+    sar ebx, 16
+    or  eax, ebx
+    shl eax, 16
+%endmacro
+%macro DO_BXOR 0
+    sar eax, 16
+    sar ebx, 16
+    xor eax, ebx
+    shl eax, 16
+%endmacro
+%macro DO_SHL 0
+    sar eax, 16
+    mov ecx, ebx
+    sar ecx, 16
+    and ecx, 31
+    shl eax, cl
+    shl eax, 16
+%endmacro
+%macro DO_SHR 0
+    sar eax, 16
+    mov ecx, ebx
+    sar ecx, 16
+    and ecx, 31
+    sar eax, cl
+    shl eax, 16
+%endmacro
+%macro DO_LSHR 0
+    sar eax, 16
+    mov ecx, ebx
+    sar ecx, 16
+    and ecx, 31
+    shr eax, cl
+    shl eax, 16
+%endmacro
+%macro DO_ROTL 0
+    sar eax, 16
+    mov ecx, ebx
+    sar ecx, 16
+    and ecx, 31
+    rol eax, cl
+    shl eax, 16
+%endmacro
+%macro DO_ROTR 0
+    sar eax, 16
+    mov ecx, ebx
+    sar ecx, 16
+    and ecx, 31
+    ror eax, cl
+    shl eax, 16
+%endmacro
+
 NUM_BIN op_add, DO_ADD
 NUM_BIN op_sub, DO_SUB
 NUM_BIN op_mul, DO_MUL
 NUM_BIN op_div, DO_DIV
+NUM_BIN op_idiv, DO_IDIV
+NUM_BIN op_mod, DO_MOD
+NUM_BIN op_pow, DO_POW
+NUM_BIN op_band, DO_BAND
+NUM_BIN op_bor, DO_BOR
+NUM_BIN op_bxor, DO_BXOR
+NUM_BIN op_shl, DO_SHL
+NUM_BIN op_shr, DO_SHR
+NUM_BIN op_lshr, DO_LSHR
+NUM_BIN op_rotl, DO_ROTL
+NUM_BIN op_rotr, DO_ROTR
 
 op_neg:
     movzx ecx, ah
@@ -278,6 +403,22 @@ op_neg:
     cmp  ecx, TAG_NUM
     jne  err_type_num
     neg  eax
+    mov  ecx, [dest_tmp]
+    mov  [ebp + ecx*8], eax
+    mov  dword [ebp + ecx*8 + 4], TAG_NUM
+    jmp  dispatch_next
+
+op_bnot:
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    mov  dl, al
+    call load_rk
+    cmp  ecx, TAG_NUM
+    jne  err_type_num
+    sar  eax, 16
+    not  eax
+    shl  eax, 16
     mov  ecx, [dest_tmp]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_NUM
