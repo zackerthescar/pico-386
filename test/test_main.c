@@ -46,6 +46,10 @@ void main() {
     RUN_TEST(compile_game_loop);
     RUN_TEST(compile_invalid_returns_null);
     RUN_TEST(compile_free_null_safe);
+    RUN_TEST(compile_print_runs_vm);
+    RUN_TEST(compile_arithmetic_global_runs_vm);
+    RUN_TEST(compile_boolean_short_circuit_runs_vm);
+    RUN_TEST(compile_multi_arg_call_preserves_args);
 
     TEST_REPORT();
 }

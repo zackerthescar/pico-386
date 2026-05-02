@@ -1,7 +1,10 @@
 use alloc::vec::Vec;
 
 use crate::ast::*;
-use crate::bytecode::{Constant, FuncProto};
+use crate::bytecode::*;
+
+const FIRST_TEMP: u8 = 32;
+const MAX_REG: u8 = 126;
 
 pub struct Compiler {
     names: NameTable,
@@ -13,162 +16,524 @@ impl Compiler {
     }
 
     pub fn compile_chunk(&self, chunk: Chunk) -> FuncProto {
-        let mut constants = Vec::new();
-        let mut prototypes = Vec::new();
-        self.collect_stats(&chunk.body, &mut constants, &mut prototypes);
-        FuncProto::new(constants, prototypes)
+        let mut cg = CodeGen::new(self);
+        cg.compile_stats(&chunk.body);
+        cg.emit(abc(P386_OP_RETURN, 0, 1, 0));
+        cg.finish()
+    }
+}
+
+struct CodeGen<'a> {
+    compiler: &'a Compiler,
+    code: Vec<u32>,
+    constants: Vec<Constant>,
+    prototypes: Vec<FuncProto>,
+    globals: Vec<Name>,
+    next_temp: u8,
+    max_reg: u8,
+}
+
+impl<'a> CodeGen<'a> {
+    fn new(compiler: &'a Compiler) -> Self {
+        Self {
+            compiler,
+            code: Vec::new(),
+            constants: Vec::new(),
+            prototypes: Vec::new(),
+            globals: Vec::new(),
+            next_temp: FIRST_TEMP,
+            max_reg: 0,
+        }
     }
 
-    fn collect_stats(&self, stats: &[Stat], constants: &mut Vec<Constant>, prototypes: &mut Vec<FuncProto>) {
+    fn finish(self) -> FuncProto {
+        FuncProto::new(self.code, self.constants, self.prototypes, self.max_reg.saturating_add(1).max(1))
+    }
+
+    fn emit(&mut self, ins: u32) -> usize {
+        self.code.push(ins);
+        self.code.len() - 1
+    }
+
+    fn patch_sbx(&mut self, at: usize, sbx: i16) {
+        let old = self.code[at];
+        let op = (old & 0xff) as u8;
+        let a = ((old >> 8) & 0xff) as u8;
+        self.code[at] = asbx(op, a, sbx);
+    }
+
+    fn pc(&self) -> usize { self.code.len() }
+
+    fn note_reg(&mut self, r: u8) {
+        if r > self.max_reg { self.max_reg = r; }
+    }
+
+    fn temp(&mut self) -> u8 {
+        let r = self.next_temp;
+        if r < MAX_REG { self.next_temp = self.next_temp.saturating_add(1); }
+        self.note_reg(r);
+        r
+    }
+
+    fn free_to(&mut self, mark: u8) { self.next_temp = mark; }
+
+    fn add_const(&mut self, c: Constant) -> u8 {
+        if let Some(i) = self.constants.iter().position(|old| const_eq(old, &c)) {
+            return i.min(127) as u8;
+        }
+        if self.constants.len() >= 128 {
+            return 0;
+        }
+        let idx = self.constants.len() as u8;
+        self.constants.push(c);
+        idx
+    }
+
+    fn name_bytes(&self, n: Name) -> &[u8] { self.compiler.names.resolve(n) }
+
+    fn add_name_const(&mut self, n: Name) -> u8 {
+        self.add_const(Constant::Str(self.name_bytes(n).to_vec()))
+    }
+
+    fn global_slot(&mut self, n: Name) -> u8 {
+        match self.name_bytes(n) {
+            b"print" => P386_BUILTIN_PRINT,
+            b"cls" => P386_BUILTIN_CLS,
+            b"pset" => P386_BUILTIN_PSET,
+            b"pget" => P386_BUILTIN_PGET,
+            b"line" => P386_BUILTIN_LINE,
+            b"rect" => P386_BUILTIN_RECT,
+            b"rectfill" | b"rectf" => P386_BUILTIN_RECTF,
+            b"circfill" => P386_BUILTIN_CIRCFILL,
+            b"spr" => P386_BUILTIN_SPR,
+            b"map" => P386_BUILTIN_MAP,
+            b"btn" => P386_BUILTIN_BTN,
+            b"btnp" => P386_BUILTIN_BTNP,
+            b"sfx" => P386_BUILTIN_SFX,
+            b"music" => P386_BUILTIN_MUSIC,
+            b"pairs" => P386_BUILTIN_PAIRS,
+            b"ipairs" => P386_BUILTIN_IPAIRS,
+            _ => {
+                if let Some(i) = self.globals.iter().position(|&x| x == n) {
+                    P386_USER_GLOBAL_BASE.saturating_add(i as u8)
+                } else if self.globals.len() < (256 - P386_USER_GLOBAL_BASE as usize) {
+                    let slot = P386_USER_GLOBAL_BASE.saturating_add(self.globals.len() as u8);
+                    self.globals.push(n);
+                    slot
+                } else {
+                    P386_USER_GLOBAL_BASE
+                }
+            }
+        }
+    }
+
+    fn compile_stats(&mut self, stats: &[Stat]) {
         for stat in stats {
-            self.collect_stat(stat, constants, prototypes);
+            self.compile_stat(stat);
         }
     }
 
-    fn collect_stat(&self, stat: &Stat, constants: &mut Vec<Constant>, prototypes: &mut Vec<FuncProto>) {
+    fn compile_stat(&mut self, stat: &Stat) {
+        let mark = self.next_temp;
         match stat {
-            Stat::Assign { targets, values } => {
-                for v in targets { self.collect_var(v, constants, prototypes); }
-                for e in values { self.collect_expr(e, constants, prototypes); }
-            }
-            Stat::LocalAssign { values, .. } => {
-                for e in values { self.collect_expr(e, constants, prototypes); }
-            }
-            Stat::Call(c) => self.collect_call(c, constants, prototypes),
-            Stat::Do(body) => self.collect_stats(body, constants, prototypes),
-            Stat::While { cond, body } => {
-                self.collect_expr(cond, constants, prototypes);
-                self.collect_stats(body, constants, prototypes);
-            }
-            Stat::Repeat { body, cond } => {
-                self.collect_stats(body, constants, prototypes);
-                self.collect_expr(cond, constants, prototypes);
-            }
-            Stat::If { conds, bodies, else_body } => {
-                for e in conds { self.collect_expr(e, constants, prototypes); }
-                for b in bodies { self.collect_stats(b, constants, prototypes); }
-                self.collect_stats(else_body, constants, prototypes);
-            }
-            Stat::ForNum { var, start, stop, step, body } => {
-                self.add_name_const(*var, constants);
-                self.collect_expr(start, constants, prototypes);
-                self.collect_expr(stop, constants, prototypes);
-                if let Some(step) = step { self.collect_expr(step, constants, prototypes); }
-                self.collect_stats(body, constants, prototypes);
-            }
-            Stat::ForIn { vars, iters, body } => {
-                for n in vars { self.add_name_const(*n, constants); }
-                for e in iters { self.collect_expr(e, constants, prototypes); }
-                self.collect_stats(body, constants, prototypes);
-            }
-            Stat::FuncDef { name, params, body, .. } => {
-                self.collect_func_name(name, constants);
-                self.add_function_proto(params, body, constants, prototypes);
-            }
-            Stat::LocalFuncDef { name, params, body, .. } => {
-                self.add_name_const(*name, constants);
-                self.add_function_proto(params, body, constants, prototypes);
-            }
-            Stat::Return(values) | Stat::ShortPrint(values) => {
-                for e in values { self.collect_expr(e, constants, prototypes); }
-            }
-            Stat::ShortIf { cond, body, else_body } => {
-                self.collect_expr(cond, constants, prototypes);
-                self.collect_stats(body, constants, prototypes);
-                self.collect_stats(else_body, constants, prototypes);
-            }
-            Stat::ShortWhile { cond, body } => {
-                self.collect_expr(cond, constants, prototypes);
-                self.collect_stats(body, constants, prototypes);
-            }
-            Stat::CompoundAssign { target, value, .. } => {
-                self.collect_var(target, constants, prototypes);
-                self.collect_expr(value, constants, prototypes);
-            }
-            Stat::Break | Stat::Label(_) | Stat::Goto(_) | Stat::Empty => {}
-        }
-    }
-
-    fn add_function_proto(&self, params: &[Name], body: &[Stat], constants: &mut Vec<Constant>, prototypes: &mut Vec<FuncProto>) {
-        for n in params { self.add_name_const(*n, constants); }
-        let mut fn_consts = Vec::new();
-        let mut fn_protos = Vec::new();
-        self.collect_stats(body, &mut fn_consts, &mut fn_protos);
-        prototypes.push(FuncProto::new(fn_consts, fn_protos));
-    }
-
-    fn collect_func_name(&self, name: &FuncName, constants: &mut Vec<Constant>) {
-        for n in &name.parts { self.add_name_const(*n, constants); }
-        if let Some(n) = name.method { self.add_name_const(n, constants); }
-    }
-
-    fn collect_var(&self, var: &Var, constants: &mut Vec<Constant>, prototypes: &mut Vec<FuncProto>) {
-        match var {
-            Var::Name(n) => self.add_name_const(*n, constants),
-            Var::Index(a, b) => {
-                self.collect_expr(a, constants, prototypes);
-                self.collect_expr(b, constants, prototypes);
-            }
-            Var::Field(obj, n) => {
-                self.collect_expr(obj, constants, prototypes);
-                self.add_name_const(*n, constants);
-            }
-        }
-    }
-
-    fn collect_call(&self, call: &CallExpr, constants: &mut Vec<Constant>, prototypes: &mut Vec<FuncProto>) {
-        self.collect_expr(&call.func, constants, prototypes);
-        for e in &call.args { self.collect_expr(e, constants, prototypes); }
-    }
-
-    fn collect_expr(&self, expr: &Expr, constants: &mut Vec<Constant>, prototypes: &mut Vec<FuncProto>) {
-        match expr {
-            Expr::Nil => self.add_const(constants, Constant::Nil),
-            Expr::True => self.add_const(constants, Constant::Bool(true)),
-            Expr::False => self.add_const(constants, Constant::Bool(false)),
-            Expr::Number(n) => self.add_const(constants, Constant::Num(*n)),
-            Expr::Str(s) => self.add_const(constants, Constant::Str(s.clone())),
-            Expr::Var(v) => self.collect_var(v, constants, prototypes),
-            Expr::BinOp(_, a, b) => {
-                self.collect_expr(a, constants, prototypes);
-                self.collect_expr(b, constants, prototypes);
-            }
-            Expr::UnOp(_, e) => self.collect_expr(e, constants, prototypes),
-            Expr::Call(c) => self.collect_call(c, constants, prototypes),
-            Expr::MethodCall(mc) => {
-                self.collect_expr(&mc.object, constants, prototypes);
-                self.add_name_const(mc.method, constants);
-                for e in &mc.args { self.collect_expr(e, constants, prototypes); }
-            }
-            Expr::Function { params, body, .. } => self.add_function_proto(params, body, constants, prototypes),
-            Expr::Table(fields) => {
-                for f in fields {
-                    match f {
-                        TableField::IndexedField(k, v) => {
-                            self.collect_expr(k, constants, prototypes);
-                            self.collect_expr(v, constants, prototypes);
-                        }
-                        TableField::NamedField(n, v) => {
-                            self.add_name_const(*n, constants);
-                            self.collect_expr(v, constants, prototypes);
-                        }
-                        TableField::Positional(v) => self.collect_expr(v, constants, prototypes),
+            Stat::Assign { targets, values } => self.compile_assign(targets, values),
+            Stat::LocalAssign { names, values } => {
+                for (i, name) in names.iter().enumerate() {
+                    let slot = self.global_slot(*name);
+                    if let Some(expr) = values.get(i) {
+                        let r = self.compile_expr(expr);
+                        self.emit(abc(P386_OP_SETGLOBAL, r, slot, 0));
+                    } else {
+                        let r = self.temp();
+                        self.emit(abc(P386_OP_LOADN, r, 1, 0));
+                        self.emit(abc(P386_OP_SETGLOBAL, r, slot, 0));
                     }
                 }
             }
-            Expr::Varargs => {}
+            Stat::Call(c) => { self.compile_call(c, 0); }
+            Stat::ShortPrint(values) => self.compile_print(values),
+            Stat::Do(body) => self.compile_stats(body),
+            Stat::If { conds, bodies, else_body } => self.compile_if(conds, bodies, else_body),
+            Stat::ShortIf { cond, body, else_body } => {
+                let c = self.compile_expr(cond);
+                let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+                self.compile_stats(body);
+                let jend = self.emit(asbx(P386_OP_JMP, 0, 0));
+                let else_start = self.pc();
+                self.patch_sbx(jf, (else_start as isize - jf as isize - 1) as i16);
+                self.compile_stats(else_body);
+                let end = self.pc();
+                self.patch_sbx(jend, (end as isize - jend as isize - 1) as i16);
+            }
+            Stat::While { cond, body } | Stat::ShortWhile { cond, body } => self.compile_while(cond, body),
+            Stat::Repeat { body, cond } => self.compile_repeat(body, cond),
+            Stat::Return(values) => {
+                if values.is_empty() {
+                    self.emit(abc(P386_OP_RETURN, 0, 1, 0));
+                } else {
+                    for (i, e) in values.iter().take(254).enumerate() {
+                        self.compile_expr_into(e, i as u8);
+                    }
+                    self.emit(abc(P386_OP_RETURN, 0, values.len().saturating_add(1).min(255) as u8, 0));
+                }
+            }
+            Stat::CompoundAssign { target, op, value, .. } => self.compile_compound(target, *op, value),
+            Stat::FuncDef { name, params, body, .. } => {
+                self.collect_func_name(name);
+                self.add_function_proto(params, body);
+            }
+            Stat::LocalFuncDef { name, params, body, .. } => {
+                self.add_name_const(*name);
+                self.add_function_proto(params, body);
+            }
+            Stat::ForNum { var, start, stop, step, body } => self.compile_for_num(*var, start, stop, step.as_deref(), body),
+            Stat::ForIn { vars, iters, body } => {
+                for n in vars { self.add_name_const(*n); }
+                for e in iters { self.compile_expr(e); }
+                self.compile_stats(body);
+            }
+            Stat::Break | Stat::Label(_) | Stat::Goto(_) | Stat::Empty => {}
+        }
+        self.free_to(mark);
+    }
+
+    fn compile_assign(&mut self, targets: &[Var], values: &[Expr]) {
+        for (i, target) in targets.iter().enumerate() {
+            let r = if let Some(expr) = values.get(i) {
+                self.compile_expr(expr)
+            } else {
+                let r = self.temp();
+                self.emit(abc(P386_OP_LOADN, r, 1, 0));
+                r
+            };
+            self.store_var(target, r);
         }
     }
 
-    fn add_name_const(&self, name: Name, constants: &mut Vec<Constant>) {
-        self.add_const(constants, Constant::Str(self.names.resolve(name).to_vec()));
+    fn compile_compound(&mut self, target: &Var, op: CompoundOp, value: &Expr) {
+        let lhs = self.load_var(target);
+        let rhs = self.compile_expr(value);
+        let dst = self.temp();
+        if let Some(opc) = compound_opcode(op) {
+            self.emit(abc(opc, dst, rk_reg(lhs), rk_reg(rhs)));
+            self.store_var(target, dst);
+        }
     }
 
-    fn add_const(&self, constants: &mut Vec<Constant>, c: Constant) {
-        if constants.len() >= 255 { return; }
-        let exists = constants.iter().any(|old| const_eq(old, &c));
-        if !exists { constants.push(c); }
+    fn compile_if(&mut self, conds: &[Expr], bodies: &[Vec<Stat>], else_body: &[Stat]) {
+        let mut end_jumps = Vec::new();
+        for (i, cond) in conds.iter().enumerate() {
+            let c = self.compile_expr(cond);
+            let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+            self.compile_stats(bodies.get(i).map(|v| v.as_slice()).unwrap_or(&[]));
+            end_jumps.push(self.emit(asbx(P386_OP_JMP, 0, 0)));
+            let after_body = self.pc();
+            self.patch_sbx(jf, (after_body as isize - jf as isize - 1) as i16);
+        }
+        self.compile_stats(else_body);
+        let end = self.pc();
+        for j in end_jumps {
+            self.patch_sbx(j, (end as isize - j as isize - 1) as i16);
+        }
     }
+
+    fn compile_while(&mut self, cond: &Expr, body: &[Stat]) {
+        let start = self.pc();
+        let c = self.compile_expr(cond);
+        let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+        self.compile_stats(body);
+        let back = start as isize - self.pc() as isize - 1;
+        self.emit(asbx(P386_OP_JMP, 0, back as i16));
+        let end = self.pc();
+        self.patch_sbx(jf, (end as isize - jf as isize - 1) as i16);
+    }
+
+    fn compile_repeat(&mut self, body: &[Stat], cond: &Expr) {
+        let start = self.pc();
+        self.compile_stats(body);
+        let c = self.compile_expr(cond);
+        let back = start as isize - self.pc() as isize - 1;
+        self.emit(asbx(P386_OP_JMPF, c, back as i16));
+    }
+
+    fn compile_for_num(&mut self, var: Name, start: &Expr, stop: &Expr, step: Option<&Expr>, body: &[Stat]) {
+        // Minimal lowering: var=start; while var<=stop do body; var += step end.
+        let slot = self.global_slot(var);
+        let sr = self.compile_expr(start);
+        self.emit(abc(P386_OP_SETGLOBAL, sr, slot, 0));
+        let loop_start = self.pc();
+        let vr = self.temp();
+        self.emit(abc(P386_OP_GETGLOBAL, vr, slot, 0));
+        let er = self.compile_expr(stop);
+        let cr = self.temp();
+        self.emit(abc(P386_OP_LE, cr, rk_reg(vr), rk_reg(er)));
+        let jf = self.emit(asbx(P386_OP_JMPF, cr, 0));
+        self.compile_stats(body);
+        let vr2 = self.temp();
+        self.emit(abc(P386_OP_GETGLOBAL, vr2, slot, 0));
+        let stepr = if let Some(step) = step { self.compile_expr(step) } else { self.load_const(Constant::Num(1 << 16)) };
+        let nr = self.temp();
+        self.emit(abc(P386_OP_ADD, nr, rk_reg(vr2), rk_reg(stepr)));
+        self.emit(abc(P386_OP_SETGLOBAL, nr, slot, 0));
+        let back = loop_start as isize - self.pc() as isize - 1;
+        self.emit(asbx(P386_OP_JMP, 0, back as i16));
+        let end = self.pc();
+        self.patch_sbx(jf, (end as isize - jf as isize - 1) as i16);
+    }
+
+    fn compile_print(&mut self, values: &[Expr]) {
+        let func = self.temp();
+        self.emit(abc(P386_OP_GETGLOBAL, func, P386_BUILTIN_PRINT, 0));
+        self.next_temp = func.saturating_add(1);
+        for (i, e) in values.iter().take(253).enumerate() {
+            let want = func.saturating_add(1).saturating_add(i as u8);
+            self.next_temp = want.saturating_add(1);
+            self.compile_expr_into(e, want);
+            self.next_temp = want.saturating_add(1);
+        }
+        self.emit(abc(P386_OP_CALL, func, values.len().saturating_add(1).min(255) as u8, 1));
+    }
+
+    fn compile_call(&mut self, call: &CallExpr, want_rets: u8) -> u8 {
+        let func = self.compile_expr(&call.func);
+        self.next_temp = func.saturating_add(1);
+        for (i, e) in call.args.iter().take(253).enumerate() {
+            let want = func.saturating_add(1).saturating_add(i as u8);
+            self.next_temp = want.saturating_add(1);
+            self.compile_expr_into(e, want);
+            self.next_temp = want.saturating_add(1);
+        }
+        self.emit(abc(P386_OP_CALL, func, call.args.len().saturating_add(1).min(255) as u8, want_rets.saturating_add(1)));
+        func
+    }
+
+    fn compile_exprs_contiguous(&mut self, values: &[Expr]) -> u8 {
+        let first = self.temp();
+        for (i, e) in values.iter().take(254).enumerate() {
+            let dst = first.saturating_add(i as u8);
+            self.next_temp = dst.saturating_add(1);
+            self.compile_expr_into(e, dst);
+            self.next_temp = dst.saturating_add(1);
+        }
+        first
+    }
+
+    fn compile_expr_into(&mut self, expr: &Expr, dst: u8) -> u8 {
+        self.note_reg(dst);
+        match expr {
+            Expr::Nil => { self.emit(abc(P386_OP_LOADN, dst, 1, 0)); }
+            Expr::True => { self.emit(abc(P386_OP_LOADT, dst, 0, 0)); }
+            Expr::False => { self.emit(abc(P386_OP_LOADF, dst, 0, 0)); }
+            Expr::Number(n) => {
+                let k = self.add_const(Constant::Num(*n));
+                self.emit(abx(P386_OP_LOADK, dst, k as u16));
+            }
+            Expr::Str(s) => {
+                let k = self.add_const(Constant::Str(s.clone()));
+                self.emit(abx(P386_OP_LOADK, dst, k as u16));
+            }
+            Expr::Var(v) => return self.load_var_into(v, dst),
+            Expr::BinOp(op, a, b) => {
+                if *op == BinOp::And {
+                    let ar = self.compile_expr(a);
+                    self.emit(abc(P386_OP_MOVE, dst, ar, 0));
+                    let skip = self.emit(asbx(P386_OP_JMPF, dst, 0));
+                    self.compile_expr_into(b, dst);
+                    let end = self.pc();
+                    self.patch_sbx(skip, (end as isize - skip as isize - 1) as i16);
+                } else if *op == BinOp::Or {
+                    let ar = self.compile_expr(a);
+                    self.emit(abc(P386_OP_MOVE, dst, ar, 0));
+                    let skip = self.emit(asbx(P386_OP_JMPT, dst, 0));
+                    self.compile_expr_into(b, dst);
+                    let end = self.pc();
+                    self.patch_sbx(skip, (end as isize - skip as isize - 1) as i16);
+                } else if let Some(opc) = bin_opcode(*op) {
+                    let ar = self.compile_expr(a);
+                    let br = self.compile_expr(b);
+                    self.emit(abc(opc, dst, rk_reg(ar), rk_reg(br)));
+                }
+            }
+            Expr::UnOp(op, e) => {
+                let r = self.compile_expr(e);
+                if let Some(opc) = un_opcode(*op) {
+                    self.emit(abc(opc, dst, rk_reg(r), 0));
+                } else {
+                    self.emit(abc(P386_OP_MOVE, dst, r, 0));
+                }
+            }
+            Expr::Call(c) => {
+                let r = self.compile_call(c, 1);
+                self.emit(abc(P386_OP_MOVE, dst, r, 0));
+            }
+            Expr::MethodCall(mc) => {
+                self.compile_expr(&mc.object);
+                self.add_name_const(mc.method);
+                self.emit(abc(P386_OP_LOADN, dst, 1, 0));
+            }
+            Expr::Table(fields) => {
+                self.emit(abc(P386_OP_NEWTABLE, dst, 0, 0));
+                let mut array_idx: i32 = 1 << 16;
+                for f in fields {
+                    match f {
+                        TableField::Positional(v) => {
+                            let kr = self.load_const(Constant::Num(array_idx));
+                            let vr = self.compile_expr(v);
+                            self.emit(abc(P386_OP_SETTABLE, dst, rk_reg(kr), rk_reg(vr)));
+                            array_idx += 1 << 16;
+                        }
+                        TableField::NamedField(n, v) => {
+                            let k = self.add_name_const(*n);
+                            let vr = self.compile_expr(v);
+                            self.emit(abc(P386_OP_SETFIELD, dst, k, rk_reg(vr)));
+                        }
+                        TableField::IndexedField(k, v) => {
+                            let kr = self.compile_expr(k);
+                            let vr = self.compile_expr(v);
+                            self.emit(abc(P386_OP_SETTABLE, dst, rk_reg(kr), rk_reg(vr)));
+                        }
+                    }
+                }
+            }
+            Expr::Function { params, body, .. } => {
+                self.add_function_proto(params, body);
+                self.emit(abc(P386_OP_LOADN, dst, 1, 0));
+            }
+            Expr::Varargs => { self.emit(abc(P386_OP_LOADN, dst, 1, 0)); }
+        };
+        dst
+    }
+
+    fn compile_expr(&mut self, expr: &Expr) -> u8 {
+        let r = self.temp();
+        self.compile_expr_into(expr, r)
+    }
+
+    fn load_const(&mut self, c: Constant) -> u8 {
+        let r = self.temp();
+        let k = self.add_const(c);
+        self.emit(abx(P386_OP_LOADK, r, k as u16));
+        r
+    }
+
+    fn load_var(&mut self, var: &Var) -> u8 {
+        let r = self.temp();
+        self.load_var_into(var, r)
+    }
+
+    fn load_var_into(&mut self, var: &Var, dst: u8) -> u8 {
+        self.note_reg(dst);
+        match var {
+            Var::Name(n) => {
+                let slot = self.global_slot(*n);
+                self.emit(abc(P386_OP_GETGLOBAL, dst, slot, 0));
+            }
+            Var::Index(obj, key) => {
+                let or = self.compile_expr(obj);
+                let kr = self.compile_expr(key);
+                self.emit(abc(P386_OP_GETTABLE, dst, rk_reg(or), rk_reg(kr)));
+            }
+            Var::Field(obj, n) => {
+                let or = self.compile_expr(obj);
+                let k = self.add_name_const(*n);
+                self.emit(abc(P386_OP_GETFIELD, dst, or, k));
+            }
+        }
+        dst
+    }
+
+    fn store_var(&mut self, var: &Var, src: u8) {
+        match var {
+            Var::Name(n) => {
+                let slot = self.global_slot(*n);
+                self.emit(abc(P386_OP_SETGLOBAL, src, slot, 0));
+            }
+            Var::Index(obj, key) => {
+                let or = self.compile_expr(obj);
+                let kr = self.compile_expr(key);
+                self.emit(abc(P386_OP_SETTABLE, or, rk_reg(kr), rk_reg(src)));
+            }
+            Var::Field(obj, n) => {
+                let or = self.compile_expr(obj);
+                let k = self.add_name_const(*n);
+                self.emit(abc(P386_OP_SETFIELD, or, k, rk_reg(src)));
+            }
+        }
+    }
+
+    fn add_function_proto(&mut self, params: &[Name], body: &[Stat]) {
+        let mut child = CodeGen::new(self.compiler);
+        for n in params { child.add_name_const(*n); }
+        child.compile_stats(body);
+        child.emit(abc(P386_OP_RETURN, 0, 1, 0));
+        self.prototypes.push(child.finish());
+    }
+
+    fn collect_func_name(&mut self, name: &FuncName) {
+        for n in &name.parts { self.add_name_const(*n); }
+        if let Some(n) = name.method { self.add_name_const(n); }
+    }
+}
+
+fn bin_opcode(op: BinOp) -> Option<u8> {
+    Some(match op {
+        BinOp::Eq => P386_OP_EQ,
+        BinOp::Ne => P386_OP_NE,
+        BinOp::Lt => P386_OP_LT,
+        BinOp::Le => P386_OP_LE,
+        BinOp::Gt => P386_OP_GT,
+        BinOp::Ge => P386_OP_GE,
+        BinOp::Add => P386_OP_ADD,
+        BinOp::Sub => P386_OP_SUB,
+        BinOp::Mul => P386_OP_MUL,
+        BinOp::Div => P386_OP_DIV,
+        BinOp::IDiv => P386_OP_IDIV,
+        BinOp::Mod => P386_OP_MOD,
+        BinOp::Pow => P386_OP_POW,
+        BinOp::BitAnd => P386_OP_BAND,
+        BinOp::BitOr => P386_OP_BOR,
+        BinOp::BitXor => P386_OP_BXOR,
+        BinOp::Shl => P386_OP_SHL,
+        BinOp::Shr => P386_OP_SHR,
+        BinOp::LShr => P386_OP_LSHR,
+        BinOp::RotL => P386_OP_ROTL,
+        BinOp::RotR => P386_OP_ROTR,
+        BinOp::Concat => P386_OP_CONCAT,
+        BinOp::And | BinOp::Or => return None,
+    })
+}
+
+fn un_opcode(op: UnOp) -> Option<u8> {
+    Some(match op {
+        UnOp::Neg => P386_OP_NEG,
+        UnOp::Not => P386_OP_NOT,
+        UnOp::Len => P386_OP_LEN,
+        UnOp::BitNot => P386_OP_BNOT,
+        UnOp::Peek => P386_OP_PEEK,
+        UnOp::Peek2 => P386_OP_PEEK2,
+        UnOp::Pct => return None,
+    })
+}
+
+fn compound_opcode(op: CompoundOp) -> Option<u8> {
+    Some(match op {
+        CompoundOp::Add => P386_OP_ADD,
+        CompoundOp::Sub => P386_OP_SUB,
+        CompoundOp::Mul => P386_OP_MUL,
+        CompoundOp::Div => P386_OP_DIV,
+        CompoundOp::IDiv => P386_OP_IDIV,
+        CompoundOp::Mod => P386_OP_MOD,
+        CompoundOp::Pow => P386_OP_POW,
+        CompoundOp::Concat => P386_OP_CONCAT,
+        CompoundOp::BitAnd => P386_OP_BAND,
+        CompoundOp::BitOr => P386_OP_BOR,
+        CompoundOp::BitXor => P386_OP_BXOR,
+        CompoundOp::Shl => P386_OP_SHL,
+        CompoundOp::Shr => P386_OP_SHR,
+        CompoundOp::LShr => P386_OP_LSHR,
+        CompoundOp::RotL => P386_OP_ROTL,
+        CompoundOp::RotR => P386_OP_ROTR,
+    })
 }
 
 fn const_eq(a: &Constant, b: &Constant) -> bool {

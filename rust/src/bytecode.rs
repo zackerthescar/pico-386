@@ -9,7 +9,69 @@ pub const P386_TAG_BOOL: u32 = 1;
 pub const P386_TAG_NUM: u32 = 2;
 pub const P386_TAG_STR: u32 = 3;
 
+pub const P386_OP_MOVE: u8 = 0x01;
+pub const P386_OP_LOADK: u8 = 0x02;
+pub const P386_OP_LOADT: u8 = 0x03;
+pub const P386_OP_LOADF: u8 = 0x04;
+pub const P386_OP_LOADN: u8 = 0x05;
+pub const P386_OP_GETGLOBAL: u8 = 0x10;
+pub const P386_OP_SETGLOBAL: u8 = 0x11;
+pub const P386_OP_NEWTABLE: u8 = 0x18;
+pub const P386_OP_GETTABLE: u8 = 0x19;
+pub const P386_OP_SETTABLE: u8 = 0x1a;
+pub const P386_OP_GETFIELD: u8 = 0x1b;
+pub const P386_OP_SETFIELD: u8 = 0x1c;
+pub const P386_OP_ADD: u8 = 0x20;
+pub const P386_OP_SUB: u8 = 0x21;
+pub const P386_OP_MUL: u8 = 0x22;
+pub const P386_OP_DIV: u8 = 0x23;
+pub const P386_OP_IDIV: u8 = 0x24;
+pub const P386_OP_MOD: u8 = 0x25;
+pub const P386_OP_POW: u8 = 0x26;
+pub const P386_OP_NEG: u8 = 0x27;
+pub const P386_OP_BAND: u8 = 0x28;
+pub const P386_OP_BOR: u8 = 0x29;
+pub const P386_OP_BXOR: u8 = 0x2a;
+pub const P386_OP_BNOT: u8 = 0x2b;
+pub const P386_OP_SHL: u8 = 0x2c;
+pub const P386_OP_SHR: u8 = 0x2d;
+pub const P386_OP_LSHR: u8 = 0x2e;
+pub const P386_OP_ROTL: u8 = 0x2f;
+pub const P386_OP_ROTR: u8 = 0x30;
+pub const P386_OP_EQ: u8 = 0x31;
+pub const P386_OP_NE: u8 = 0x32;
+pub const P386_OP_LT: u8 = 0x33;
+pub const P386_OP_LE: u8 = 0x34;
+pub const P386_OP_GT: u8 = 0x35;
+pub const P386_OP_GE: u8 = 0x36;
+pub const P386_OP_NOT: u8 = 0x37;
+pub const P386_OP_LEN: u8 = 0x38;
+pub const P386_OP_PEEK: u8 = 0x39;
+pub const P386_OP_PEEK2: u8 = 0x3a;
+pub const P386_OP_CONCAT: u8 = 0x3b;
+pub const P386_OP_JMP: u8 = 0x40;
+pub const P386_OP_JMPF: u8 = 0x41;
+pub const P386_OP_JMPT: u8 = 0x42;
+pub const P386_OP_CALL: u8 = 0x51;
 pub const P386_OP_RETURN: u8 = 0x53;
+
+pub const P386_BUILTIN_PRINT: u8 = 0;
+pub const P386_BUILTIN_CLS: u8 = 1;
+pub const P386_BUILTIN_PSET: u8 = 2;
+pub const P386_BUILTIN_PGET: u8 = 3;
+pub const P386_BUILTIN_LINE: u8 = 4;
+pub const P386_BUILTIN_RECT: u8 = 5;
+pub const P386_BUILTIN_RECTF: u8 = 6;
+pub const P386_BUILTIN_CIRCFILL: u8 = 7;
+pub const P386_BUILTIN_SPR: u8 = 8;
+pub const P386_BUILTIN_MAP: u8 = 9;
+pub const P386_BUILTIN_BTN: u8 = 10;
+pub const P386_BUILTIN_BTNP: u8 = 11;
+pub const P386_BUILTIN_SFX: u8 = 12;
+pub const P386_BUILTIN_MUSIC: u8 = 13;
+pub const P386_BUILTIN_PAIRS: u8 = 14;
+pub const P386_BUILTIN_IPAIRS: u8 = 15;
+pub const P386_USER_GLOBAL_BASE: u8 = 16;
 
 #[derive(Clone)]
 pub enum Constant {
@@ -19,7 +81,7 @@ pub enum Constant {
     Str(Vec<u8>),
 }
 
-/// Host/DOS compiler result exposed through the C FFI as an opaque handle.
+/// Compiler result exposed through the C FFI as an opaque handle.
 ///
 /// `code` is a complete P386 bytecode container, not just raw instructions.
 /// The legacy C API name predates the container format.
@@ -30,11 +92,26 @@ pub struct FuncProto {
 }
 
 impl FuncProto {
-    pub fn new(constants: Vec<Constant>, prototypes: Vec<FuncProto>) -> Self {
-        let code = emit_container(&constants);
+    pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, n_regs: u8) -> Self {
+        let code = emit_container(&instructions, &constants, n_regs);
         Self { code, constants, prototypes }
     }
 }
+
+pub fn abc(op: u8, a: u8, b: u8, c: u8) -> u32 {
+    (op as u32) | ((a as u32) << 8) | ((b as u32) << 16) | ((c as u32) << 24)
+}
+
+pub fn abx(op: u8, a: u8, bx: u16) -> u32 {
+    abc(op, a, (bx & 0xff) as u8, (bx >> 8) as u8)
+}
+
+pub fn asbx(op: u8, a: u8, sbx: i16) -> u32 {
+    abx(op, a, sbx as u16)
+}
+
+pub fn rk_reg(r: u8) -> u8 { r & 0x7f }
+pub fn rk_const(k: u8) -> u8 { 0x80 | (k & 0x7f) }
 
 fn align4(v: usize) -> usize { (v + 3) & !3 }
 
@@ -48,10 +125,6 @@ fn patch_u32(out: &mut [u8], off: usize, v: u32) {
 
 fn pad4(out: &mut Vec<u8>) {
     while out.len() & 3 != 0 { out.push(0); }
-}
-
-fn instr_abc(op: u8, a: u8, b: u8, c: u8) -> u32 {
-    (op as u32) | ((a as u32) << 8) | ((b as u32) << 16) | ((c as u32) << 24)
 }
 
 fn collect_strings(constants: &[Constant]) -> Vec<Vec<u8>> {
@@ -70,7 +143,7 @@ fn string_index(strings: &[Vec<u8>], needle: &[u8]) -> u32 {
     strings.iter().position(|s| s.as_slice() == needle).unwrap_or(0) as u32
 }
 
-pub fn emit_container(constants: &[Constant]) -> Vec<u8> {
+pub fn emit_container(instructions: &[u32], constants: &[Constant], n_regs: u8) -> Vec<u8> {
     let strings = collect_strings(constants);
     let n_protos = 1u32;
     let n_strings = strings.len() as u32;
@@ -84,7 +157,6 @@ pub fn emit_container(constants: &[Constant]) -> Vec<u8> {
 
     let mut out = Vec::new();
 
-    // Header, total_size patched later.
     push_u32(&mut out, P386_BC_MAGIC);
     push_u32(&mut out, P386_BC_VERSION);
     let total_size_patch = out.len();
@@ -95,9 +167,8 @@ pub fn emit_container(constants: &[Constant]) -> Vec<u8> {
     push_u32(&mut out, string_table_offset as u32);
     push_u32(&mut out, bytecode_section_offset as u32);
 
-    // Single main proto. Offsets are relative to bytecode_section_offset.
     let code_off = 0usize;
-    let code_len = 4usize;
+    let code_len = instructions.len() * 4;
     let consts_off = align4(code_off + code_len);
     let n_consts = constants.len().min(255);
     let consts_len = n_consts * 8;
@@ -109,12 +180,11 @@ pub fn emit_container(constants: &[Constant]) -> Vec<u8> {
     push_u32(&mut out, upvals_off as u32);
     push_u8(&mut out, n_consts as u8);
     push_u8(&mut out, 0); // n_params
-    push_u8(&mut out, 1); // n_regs
+    push_u8(&mut out, n_regs.max(1));
     push_u8(&mut out, 0); // n_upvalues
     push_u8(&mut out, P386_PROTO_FLAG_MAIN);
     out.extend_from_slice(&[0, 0, 0]);
 
-    // String table, data offsets patched after string payload is emitted.
     let mut string_entry_patches = Vec::new();
     for s in &strings {
         string_entry_patches.push(out.len());
@@ -124,8 +194,9 @@ pub fn emit_container(constants: &[Constant]) -> Vec<u8> {
 
     while out.len() < bytecode_section_offset { out.push(0); }
 
-    // Bytecode section: top-level RETURN. Enough for loader/VM to halt cleanly.
-    push_u32(&mut out, instr_abc(P386_OP_RETURN, 0, 1, 0));
+    for &ins in instructions {
+        push_u32(&mut out, ins);
+    }
     pad4(&mut out);
 
     for c in constants.iter().take(255) {
@@ -137,11 +208,8 @@ pub fn emit_container(constants: &[Constant]) -> Vec<u8> {
         }
     }
     pad4(&mut out);
+    pad4(&mut out); // no upvalues yet
 
-    // No upvalues yet.
-    pad4(&mut out);
-
-    // String payloads live after bytecode/consts/upvals. Offsets are absolute.
     for (i, s) in strings.iter().enumerate() {
         let data_off = out.len() as u32;
         patch_u32(&mut out, string_entry_patches[i], data_off);

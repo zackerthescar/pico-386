@@ -2,6 +2,7 @@
 #include <string.h>
 #include "test.h"
 #include "rust.h"
+#include "p386_vm.h"
 
 /*
  * Tests for the PICO-8 Lua compiler (Rust FFI).
@@ -206,5 +207,77 @@ TEST(compile_invalid_returns_null) {
 TEST(compile_free_null_safe) {
     /* Freeing NULL should not crash */
     p8_free_program(0);
+    PASS();
+}
+
+TEST(compile_print_runs_vm) {
+    const char *code = "print(\"0.1.10c\")";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(bc_len > 4);
+    ASSERT_NOT_NULL(bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_arithmetic_global_runs_vm) {
+    const char *code = "x = 1 + 2 * 3 - 4 / 2\nreturn x";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(5 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_boolean_short_circuit_runs_vm) {
+    const char *code = "return false and 9, nil or 7";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_BOOL, vm.value_stack[0].tag);
+    ASSERT_EQ(0, vm.value_stack[0].value);
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[1].tag);
+    ASSERT_EQ(7 << 16, vm.value_stack[1].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_multi_arg_call_preserves_args) {
+    const char *code = "print(1+2, 3+4)";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    p8_free_program(prog);
     PASS();
 }
