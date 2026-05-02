@@ -2,7 +2,6 @@
 *.exe
 *.o
 .direnv/
-flake.lock
 *.obj
 dos/
 zlib/
@@ -11,3 +10,5 @@ zlib/
 *.img
 .claude
 CLAUDE.md
+/result
+rust/target/
