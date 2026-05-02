@@ -10,6 +10,7 @@
     typedef char p386_layout_static_assert_##name[(cond) ? 1 : -1]
 
 /* These offsets are for the 32-bit DOS ABI used by the NASM dispatcher. */
+#ifdef __386__
 P386_LAYOUT_STATIC_ASSERT(pointer_size_32bit, sizeof(void *) == 4);
 
 P386_LAYOUT_STATIC_ASSERT(p386_value_size, sizeof(P386Value) == 8);
@@ -58,6 +59,8 @@ P386_LAYOUT_STATIC_ASSERT(err_type, P386_VM_ERR_TYPE == -3);
 P386_LAYOUT_STATIC_ASSERT(err_div0, P386_VM_ERR_DIV0 == -4);
 P386_LAYOUT_STATIC_ASSERT(err_bounds, P386_VM_ERR_BOUNDS == -5);
 P386_LAYOUT_STATIC_ASSERT(err_unimpl, P386_VM_ERR_UNIMPL == -6);
+
+#endif /* __386__ */
 
 #undef P386_LAYOUT_STATIC_ASSERT
 
