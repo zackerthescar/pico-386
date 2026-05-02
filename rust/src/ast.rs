@@ -21,6 +21,7 @@ pub enum Stat {
         values: Vec<Expr>,
     },
     Call(CallExpr),
+    MethodCall(MethodCallExpr),
     Do(Vec<Stat>),
     While {
         cond: Box<Expr>,

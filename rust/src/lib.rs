@@ -559,10 +559,7 @@ peg::parser! {
             = e:function_call_expr(nt) {
                 match e {
                     Expr::Call(c) => Stat::Call(c),
-                    Expr::MethodCall(mc) => Stat::Call(CallExpr {
-                        func: Box::new(Expr::Var(Var::Field(mc.object, mc.method))),
-                        args: mc.args,
-                    }),
+                    Expr::MethodCall(mc) => Stat::MethodCall(mc),
                     _ => Stat::Empty,
                 }
             }
@@ -604,7 +601,10 @@ pub extern "C" fn p8_compile(code: *const u8, len: u32) -> P8Program {
         Err(_) => return core::ptr::null_mut(),
     };
     let comp = compiler::Compiler::new(nt);
-    let proto = comp.compile_chunk(chunk);
+    let proto = match comp.compile_chunk(chunk) {
+        Some(p) => p,
+        None => return core::ptr::null_mut(),
+    };
     Box::into_raw(Box::new(proto))
 }
 

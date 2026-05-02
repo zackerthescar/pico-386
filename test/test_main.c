@@ -50,6 +50,10 @@ void main() {
     RUN_TEST(compile_arithmetic_global_runs_vm);
     RUN_TEST(compile_boolean_short_circuit_runs_vm);
     RUN_TEST(compile_multi_arg_call_preserves_args);
+    RUN_TEST(compile_local_scope_shadowing_runs_vm);
+    RUN_TEST(compile_multi_assign_rhs_first_runs_vm);
+    RUN_TEST(compile_constant_overflow_returns_null);
+    RUN_TEST(compile_branch_local_scope_does_not_leak);
 
     TEST_REPORT();
 }

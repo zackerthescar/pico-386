@@ -10,14 +10,22 @@ pub struct Compiler {
     names: NameTable,
 }
 
+#[derive(Clone, Copy)]
+struct Local {
+    name: Name,
+    reg: u8,
+}
+
 impl Compiler {
     pub fn new(names: NameTable) -> Self {
         Self { names }
     }
 
-    pub fn compile_chunk(&self, chunk: Chunk) -> FuncProto {
+    pub fn compile_chunk(&self, chunk: Chunk) -> Option<FuncProto> {
         let mut cg = CodeGen::new(self);
+        cg.push_scope();
         cg.compile_stats(&chunk.body);
+        cg.pop_scope();
         cg.emit(abc(P386_OP_RETURN, 0, 1, 0));
         cg.finish()
     }
@@ -29,8 +37,12 @@ struct CodeGen<'a> {
     constants: Vec<Constant>,
     prototypes: Vec<FuncProto>,
     globals: Vec<Name>,
+    locals: Vec<Local>,
+    scopes: Vec<(usize, u8)>,
+    next_local: u8,
     next_temp: u8,
     max_reg: u8,
+    failed: bool,
 }
 
 impl<'a> CodeGen<'a> {
@@ -41,13 +53,17 @@ impl<'a> CodeGen<'a> {
             constants: Vec::new(),
             prototypes: Vec::new(),
             globals: Vec::new(),
+            locals: Vec::new(),
+            scopes: Vec::new(),
+            next_local: 0,
             next_temp: FIRST_TEMP,
             max_reg: 0,
+            failed: false,
         }
     }
 
-    fn finish(self) -> FuncProto {
-        FuncProto::new(self.code, self.constants, self.prototypes, self.max_reg.saturating_add(1).max(1))
+    fn finish(self) -> Option<FuncProto> {
+        if self.failed { None } else { Some(FuncProto::new(self.code, self.constants, self.prototypes, self.max_reg.saturating_add(1).max(1))) }
     }
 
     fn emit(&mut self, ins: u32) -> usize {
@@ -55,33 +71,79 @@ impl<'a> CodeGen<'a> {
         self.code.len() - 1
     }
 
-    fn patch_sbx(&mut self, at: usize, sbx: i16) {
+    fn checked_sbx(&mut self, delta: isize) -> i16 {
+        if delta < i16::MIN as isize || delta > i16::MAX as isize {
+            self.failed = true;
+            0
+        } else {
+            delta as i16
+        }
+    }
+
+    fn patch_sbx_delta(&mut self, at: usize, delta: isize) {
+        let sbx = self.checked_sbx(delta);
         let old = self.code[at];
         let op = (old & 0xff) as u8;
         let a = ((old >> 8) & 0xff) as u8;
         self.code[at] = asbx(op, a, sbx);
     }
 
+    fn emit_sbx_delta(&mut self, op: u8, a: u8, delta: isize) -> usize {
+        let sbx = self.checked_sbx(delta);
+        self.emit(asbx(op, a, sbx))
+    }
+
     fn pc(&self) -> usize { self.code.len() }
 
     fn note_reg(&mut self, r: u8) {
+        if r > MAX_REG { self.failed = true; }
         if r > self.max_reg { self.max_reg = r; }
+    }
+
+    fn checked_reg(&mut self, r: u8) -> u8 {
+        if r > MAX_REG { self.failed = true; MAX_REG } else { self.note_reg(r); r }
     }
 
     fn temp(&mut self) -> u8 {
         let r = self.next_temp;
-        if r < MAX_REG { self.next_temp = self.next_temp.saturating_add(1); }
+        if r >= MAX_REG { self.failed = true; return MAX_REG; }
+        self.next_temp = self.next_temp.saturating_add(1);
         self.note_reg(r);
         r
     }
 
     fn free_to(&mut self, mark: u8) { self.next_temp = mark; }
 
+    fn push_scope(&mut self) {
+        self.scopes.push((self.locals.len(), self.next_local));
+    }
+
+    fn pop_scope(&mut self) {
+        if let Some((len, next)) = self.scopes.pop() {
+            self.locals.truncate(len);
+            self.next_local = next;
+        }
+    }
+
+    fn alloc_local(&mut self, name: Name) -> u8 {
+        if self.next_local >= FIRST_TEMP { self.failed = true; return 0; }
+        let reg = self.next_local;
+        self.next_local = self.next_local.saturating_add(1);
+        self.locals.push(Local { name, reg });
+        self.note_reg(reg);
+        reg
+    }
+
+    fn find_local(&self, name: Name) -> Option<u8> {
+        self.locals.iter().rev().find(|l| l.name == name).map(|l| l.reg)
+    }
+
     fn add_const(&mut self, c: Constant) -> u8 {
         if let Some(i) = self.constants.iter().position(|old| const_eq(old, &c)) {
             return i.min(127) as u8;
         }
         if self.constants.len() >= 128 {
+            self.failed = true;
             return 0;
         }
         let idx = self.constants.len() as u8;
@@ -121,6 +183,7 @@ impl<'a> CodeGen<'a> {
                     self.globals.push(n);
                     slot
                 } else {
+                    self.failed = true;
                     P386_USER_GLOBAL_BASE
                 }
             }
@@ -138,32 +201,45 @@ impl<'a> CodeGen<'a> {
         match stat {
             Stat::Assign { targets, values } => self.compile_assign(targets, values),
             Stat::LocalAssign { names, values } => {
-                for (i, name) in names.iter().enumerate() {
-                    let slot = self.global_slot(*name);
-                    if let Some(expr) = values.get(i) {
-                        let r = self.compile_expr(expr);
-                        self.emit(abc(P386_OP_SETGLOBAL, r, slot, 0));
+                let mut rhs = Vec::new();
+                for i in 0..names.len() {
+                    let r = if let Some(expr) = values.get(i) {
+                        self.compile_expr(expr)
                     } else {
                         let r = self.temp();
                         self.emit(abc(P386_OP_LOADN, r, 1, 0));
-                        self.emit(abc(P386_OP_SETGLOBAL, r, slot, 0));
-                    }
+                        r
+                    };
+                    rhs.push(r);
+                }
+                for (i, name) in names.iter().enumerate() {
+                    let dst = self.alloc_local(*name);
+                    self.emit(abc(P386_OP_MOVE, dst, rhs[i], 0));
                 }
             }
             Stat::Call(c) => { self.compile_call(c, 0); }
+            Stat::MethodCall(mc) => { self.compile_method_call(mc, 0); }
             Stat::ShortPrint(values) => self.compile_print(values),
-            Stat::Do(body) => self.compile_stats(body),
+            Stat::Do(body) => {
+                self.push_scope();
+                self.compile_stats(body);
+                self.pop_scope();
+            }
             Stat::If { conds, bodies, else_body } => self.compile_if(conds, bodies, else_body),
             Stat::ShortIf { cond, body, else_body } => {
                 let c = self.compile_expr(cond);
                 let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+                self.push_scope();
                 self.compile_stats(body);
+                self.pop_scope();
                 let jend = self.emit(asbx(P386_OP_JMP, 0, 0));
                 let else_start = self.pc();
-                self.patch_sbx(jf, (else_start as isize - jf as isize - 1) as i16);
+                self.patch_sbx_delta(jf, else_start as isize - jf as isize - 1);
+                self.push_scope();
                 self.compile_stats(else_body);
+                self.pop_scope();
                 let end = self.pc();
-                self.patch_sbx(jend, (end as isize - jend as isize - 1) as i16);
+                self.patch_sbx_delta(jend, end as isize - jend as isize - 1);
             }
             Stat::While { cond, body } | Stat::ShortWhile { cond, body } => self.compile_while(cond, body),
             Stat::Repeat { body, cond } => self.compile_repeat(body, cond),
@@ -198,7 +274,8 @@ impl<'a> CodeGen<'a> {
     }
 
     fn compile_assign(&mut self, targets: &[Var], values: &[Expr]) {
-        for (i, target) in targets.iter().enumerate() {
+        let mut rhs = Vec::new();
+        for i in 0..targets.len() {
             let r = if let Some(expr) = values.get(i) {
                 self.compile_expr(expr)
             } else {
@@ -206,6 +283,9 @@ impl<'a> CodeGen<'a> {
                 self.emit(abc(P386_OP_LOADN, r, 1, 0));
                 r
             };
+            rhs.push(r);
+        }
+        for (target, r) in targets.iter().zip(rhs.into_iter()) {
             self.store_var(target, r);
         }
     }
@@ -225,15 +305,19 @@ impl<'a> CodeGen<'a> {
         for (i, cond) in conds.iter().enumerate() {
             let c = self.compile_expr(cond);
             let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+            self.push_scope();
             self.compile_stats(bodies.get(i).map(|v| v.as_slice()).unwrap_or(&[]));
+            self.pop_scope();
             end_jumps.push(self.emit(asbx(P386_OP_JMP, 0, 0)));
             let after_body = self.pc();
-            self.patch_sbx(jf, (after_body as isize - jf as isize - 1) as i16);
+            self.patch_sbx_delta(jf, after_body as isize - jf as isize - 1);
         }
+        self.push_scope();
         self.compile_stats(else_body);
+        self.pop_scope();
         let end = self.pc();
         for j in end_jumps {
-            self.patch_sbx(j, (end as isize - j as isize - 1) as i16);
+            self.patch_sbx_delta(j, end as isize - j as isize - 1);
         }
     }
 
@@ -241,44 +325,50 @@ impl<'a> CodeGen<'a> {
         let start = self.pc();
         let c = self.compile_expr(cond);
         let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+        self.push_scope();
         self.compile_stats(body);
+        self.pop_scope();
         let back = start as isize - self.pc() as isize - 1;
-        self.emit(asbx(P386_OP_JMP, 0, back as i16));
+        self.emit_sbx_delta(P386_OP_JMP, 0, back);
         let end = self.pc();
-        self.patch_sbx(jf, (end as isize - jf as isize - 1) as i16);
+        self.patch_sbx_delta(jf, end as isize - jf as isize - 1);
     }
 
     fn compile_repeat(&mut self, body: &[Stat], cond: &Expr) {
         let start = self.pc();
+        self.push_scope();
         self.compile_stats(body);
+        self.pop_scope();
         let c = self.compile_expr(cond);
         let back = start as isize - self.pc() as isize - 1;
-        self.emit(asbx(P386_OP_JMPF, c, back as i16));
+        self.emit_sbx_delta(P386_OP_JMPF, c, back);
     }
 
     fn compile_for_num(&mut self, var: Name, start: &Expr, stop: &Expr, step: Option<&Expr>, body: &[Stat]) {
-        // Minimal lowering: var=start; while var<=stop do body; var += step end.
-        let slot = self.global_slot(var);
-        let sr = self.compile_expr(start);
-        self.emit(abc(P386_OP_SETGLOBAL, sr, slot, 0));
+        // Minimal lowering: local var=start; while var<=stop do body; var += step end.
+        self.push_scope();
+        let loop_reg = self.alloc_local(var);
+        self.compile_expr_into(start, loop_reg);
+        let stop_reg = self.temp();
+        self.compile_expr_into(stop, stop_reg);
+        let step_reg = self.temp();
+        if let Some(step) = step {
+            self.compile_expr_into(step, step_reg);
+        } else {
+            let one = self.add_const(Constant::Num(1 << 16));
+            self.emit(abx(P386_OP_LOADK, step_reg, one as u16));
+        }
         let loop_start = self.pc();
-        let vr = self.temp();
-        self.emit(abc(P386_OP_GETGLOBAL, vr, slot, 0));
-        let er = self.compile_expr(stop);
         let cr = self.temp();
-        self.emit(abc(P386_OP_LE, cr, rk_reg(vr), rk_reg(er)));
+        self.emit(abc(P386_OP_LE, cr, rk_reg(loop_reg), rk_reg(stop_reg)));
         let jf = self.emit(asbx(P386_OP_JMPF, cr, 0));
         self.compile_stats(body);
-        let vr2 = self.temp();
-        self.emit(abc(P386_OP_GETGLOBAL, vr2, slot, 0));
-        let stepr = if let Some(step) = step { self.compile_expr(step) } else { self.load_const(Constant::Num(1 << 16)) };
-        let nr = self.temp();
-        self.emit(abc(P386_OP_ADD, nr, rk_reg(vr2), rk_reg(stepr)));
-        self.emit(abc(P386_OP_SETGLOBAL, nr, slot, 0));
+        self.emit(abc(P386_OP_ADD, loop_reg, rk_reg(loop_reg), rk_reg(step_reg)));
         let back = loop_start as isize - self.pc() as isize - 1;
-        self.emit(asbx(P386_OP_JMP, 0, back as i16));
+        self.emit_sbx_delta(P386_OP_JMP, 0, back);
         let end = self.pc();
-        self.patch_sbx(jf, (end as isize - jf as isize - 1) as i16);
+        self.patch_sbx_delta(jf, end as isize - jf as isize - 1);
+        self.pop_scope();
     }
 
     fn compile_print(&mut self, values: &[Expr]) {
@@ -286,7 +376,7 @@ impl<'a> CodeGen<'a> {
         self.emit(abc(P386_OP_GETGLOBAL, func, P386_BUILTIN_PRINT, 0));
         self.next_temp = func.saturating_add(1);
         for (i, e) in values.iter().take(253).enumerate() {
-            let want = func.saturating_add(1).saturating_add(i as u8);
+            let want = self.checked_reg(func.saturating_add(1).saturating_add(i as u8));
             self.next_temp = want.saturating_add(1);
             self.compile_expr_into(e, want);
             self.next_temp = want.saturating_add(1);
@@ -298,7 +388,7 @@ impl<'a> CodeGen<'a> {
         let func = self.compile_expr(&call.func);
         self.next_temp = func.saturating_add(1);
         for (i, e) in call.args.iter().take(253).enumerate() {
-            let want = func.saturating_add(1).saturating_add(i as u8);
+            let want = self.checked_reg(func.saturating_add(1).saturating_add(i as u8));
             self.next_temp = want.saturating_add(1);
             self.compile_expr_into(e, want);
             self.next_temp = want.saturating_add(1);
@@ -307,10 +397,28 @@ impl<'a> CodeGen<'a> {
         func
     }
 
+    fn compile_method_call(&mut self, call: &MethodCallExpr, want_rets: u8) -> u8 {
+        let func = self.temp();
+        let self_reg = self.checked_reg(func.saturating_add(1));
+        self.next_temp = self_reg.saturating_add(1);
+        self.compile_expr_into(&call.object, self_reg);
+        let method = self.add_name_const(call.method);
+        self.emit(abc(P386_OP_GETFIELD, func, self_reg, method));
+        for (i, e) in call.args.iter().take(252).enumerate() {
+            let want = self.checked_reg(func.saturating_add(2).saturating_add(i as u8));
+            self.next_temp = want.saturating_add(1);
+            self.compile_expr_into(e, want);
+            self.next_temp = want.saturating_add(1);
+        }
+        let nargs = call.args.len().saturating_add(2).min(255) as u8;
+        self.emit(abc(P386_OP_CALL, func, nargs, want_rets.saturating_add(1)));
+        func
+    }
+
     fn compile_exprs_contiguous(&mut self, values: &[Expr]) -> u8 {
         let first = self.temp();
         for (i, e) in values.iter().take(254).enumerate() {
-            let dst = first.saturating_add(i as u8);
+            let dst = self.checked_reg(first.saturating_add(i as u8));
             self.next_temp = dst.saturating_add(1);
             self.compile_expr_into(e, dst);
             self.next_temp = dst.saturating_add(1);
@@ -340,14 +448,14 @@ impl<'a> CodeGen<'a> {
                     let skip = self.emit(asbx(P386_OP_JMPF, dst, 0));
                     self.compile_expr_into(b, dst);
                     let end = self.pc();
-                    self.patch_sbx(skip, (end as isize - skip as isize - 1) as i16);
+                    self.patch_sbx_delta(skip, end as isize - skip as isize - 1);
                 } else if *op == BinOp::Or {
                     let ar = self.compile_expr(a);
                     self.emit(abc(P386_OP_MOVE, dst, ar, 0));
                     let skip = self.emit(asbx(P386_OP_JMPT, dst, 0));
                     self.compile_expr_into(b, dst);
                     let end = self.pc();
-                    self.patch_sbx(skip, (end as isize - skip as isize - 1) as i16);
+                    self.patch_sbx_delta(skip, end as isize - skip as isize - 1);
                 } else if let Some(opc) = bin_opcode(*op) {
                     let ar = self.compile_expr(a);
                     let br = self.compile_expr(b);
@@ -367,9 +475,8 @@ impl<'a> CodeGen<'a> {
                 self.emit(abc(P386_OP_MOVE, dst, r, 0));
             }
             Expr::MethodCall(mc) => {
-                self.compile_expr(&mc.object);
-                self.add_name_const(mc.method);
-                self.emit(abc(P386_OP_LOADN, dst, 1, 0));
+                let r = self.compile_method_call(mc, 1);
+                self.emit(abc(P386_OP_MOVE, dst, r, 0));
             }
             Expr::Table(fields) => {
                 self.emit(abc(P386_OP_NEWTABLE, dst, 0, 0));
@@ -425,8 +532,12 @@ impl<'a> CodeGen<'a> {
         self.note_reg(dst);
         match var {
             Var::Name(n) => {
-                let slot = self.global_slot(*n);
-                self.emit(abc(P386_OP_GETGLOBAL, dst, slot, 0));
+                if let Some(src) = self.find_local(*n) {
+                    self.emit(abc(P386_OP_MOVE, dst, src, 0));
+                } else {
+                    let slot = self.global_slot(*n);
+                    self.emit(abc(P386_OP_GETGLOBAL, dst, slot, 0));
+                }
             }
             Var::Index(obj, key) => {
                 let or = self.compile_expr(obj);
@@ -445,8 +556,12 @@ impl<'a> CodeGen<'a> {
     fn store_var(&mut self, var: &Var, src: u8) {
         match var {
             Var::Name(n) => {
-                let slot = self.global_slot(*n);
-                self.emit(abc(P386_OP_SETGLOBAL, src, slot, 0));
+                if let Some(dst) = self.find_local(*n) {
+                    self.emit(abc(P386_OP_MOVE, dst, src, 0));
+                } else {
+                    let slot = self.global_slot(*n);
+                    self.emit(abc(P386_OP_SETGLOBAL, src, slot, 0));
+                }
             }
             Var::Index(obj, key) => {
                 let or = self.compile_expr(obj);
@@ -463,10 +578,16 @@ impl<'a> CodeGen<'a> {
 
     fn add_function_proto(&mut self, params: &[Name], body: &[Stat]) {
         let mut child = CodeGen::new(self.compiler);
-        for n in params { child.add_name_const(*n); }
+        child.push_scope();
+        for n in params { child.alloc_local(*n); }
         child.compile_stats(body);
+        child.pop_scope();
         child.emit(abc(P386_OP_RETURN, 0, 1, 0));
-        self.prototypes.push(child.finish());
+        if let Some(proto) = child.finish() {
+            self.prototypes.push(proto);
+        } else {
+            self.failed = true;
+        }
     }
 
     fn collect_func_name(&mut self, name: &FuncName) {

@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include "test.h"
 #include "rust.h"
@@ -278,6 +279,73 @@ TEST(compile_multi_arg_call_preserves_args) {
     bc_len = p8_program_bytecode(prog, &bc);
     ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
     ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_local_scope_shadowing_runs_vm) {
+    const char *code = "local x=1\ndo local x=2 end\nreturn x";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(1 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_multi_assign_rhs_first_runs_vm) {
+    const char *code = "local a=1\nlocal b=2\na,b=b,a\nreturn a,b";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(2 << 16, vm.value_stack[0].value);
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[1].tag);
+    ASSERT_EQ(1 << 16, vm.value_stack[1].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_constant_overflow_returns_null) {
+    char code[2048];
+    int off = 0;
+    int i;
+    off += sprintf(code + off, "return ");
+    for (i = 0; i < 140; i++) {
+        off += sprintf(code + off, "%d%s", i, (i == 139) ? "" : ",");
+    }
+    ASSERT_NULL(p8_compile((const unsigned char *)code, strlen(code)));
+    PASS();
+}
+
+TEST(compile_branch_local_scope_does_not_leak) {
+    const char *code = "if true then local y=2 end\nreturn y";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NIL, vm.value_stack[0].tag);
     p8_free_program(prog);
     PASS();
 }
