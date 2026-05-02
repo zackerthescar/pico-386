@@ -282,3 +282,28 @@ uint32_t p386_table_len(const P386Table *t) {
     if (!t) return 0;
     return t->array_len;
 }
+
+int p386_table_next(const P386Table *t, const P386Value *key,
+                    P386Value *out_key, P386Value *out_val) {
+    uint32_t i = 0;
+    out_key->value = 0;
+    out_key->tag = P386_TAG_NIL;
+    out_val->value = 0;
+    out_val->tag = P386_TAG_NIL;
+    if (!t) return 0;
+
+    if (key->tag != P386_TAG_NIL) {
+        int idx = find_entry(t, key);
+        if (idx < 0) return 0;
+        i = (uint32_t)idx + 1;
+    }
+
+    for (; i < t->len; i++) {
+        if (t->entries[i].key.tag == P386_TAG_NIL) continue;
+        if (t->entries[i].val.tag == P386_TAG_NIL) continue;
+        *out_key = t->entries[i].key;
+        *out_val = t->entries[i].val;
+        return 1;
+    }
+    return 0;
+}

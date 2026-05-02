@@ -68,6 +68,12 @@ void p386_table_set(P386Table *t, const P386Value *key, const P386Value *val);
 /* LEN for tables: array_len. */
 uint32_t p386_table_len(const P386Table *t);
 
+/* Generic-for helper: next table entry after key. If key is nil, starts at the
+ * first live entry. Writes nil/nil at end or for an unknown key. Returns 1 when
+ * an entry was produced, 0 at end. */
+int p386_table_next(const P386Table *t, const P386Value *key,
+                    P386Value *out_key, P386Value *out_val);
+
 #ifdef __cplusplus
 }
 #endif

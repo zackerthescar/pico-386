@@ -24,6 +24,8 @@
 %define TAG_NUM  2
 %define TAG_STR  3
 %define TAG_TAB  4
+%define TAG_FUNC 5
+%define TAG_CFUNC 6
 
 %define VM_HALTED 1
 %define ERR_OPCODE -2
@@ -40,12 +42,14 @@ msg_bounds     db 'register/constant out of bounds',0
 msg_unimpl     db 'opcode not implemented yet',0
 msg_type_tab   db 'expected table',0
 msg_type_str   db 'expected string or number',0
+msg_type_iter  db 'expected table iterator state',0
 msg_oom        db 'out of memory',0
 
 extern _p386_table_new
 extern _p386_table_get
 extern _p386_table_set
 extern _p386_table_len
+extern _p386_table_next
 extern _p386_string_intern
 extern _p386_value_concat
 
@@ -144,9 +148,9 @@ dispatch_table:
 %elif i = 0x46
     dd op_forloop
 %elif i = 0x47
-    dd op_unimpl
+    dd op_tforcall
 %elif i = 0x48
-    dd op_unimpl
+    dd op_tforloop
 %elif i = 0x53
     dd op_return
 %else
@@ -936,6 +940,62 @@ op_forloop:
     lea  esi, [esi + ebx*4]
     jmp  dispatch_next
 
+op_tforcall:
+    movzx ecx, ah                  ; A: R[A]=iterator, R[A+1]=state, R[A+2]=control
+    shr  eax, 16
+    movzx edx, al                  ; C result count (0 => all; for now produce key/value)
+    cmp  dword [ebp + ecx*8 + 4], TAG_CFUNC
+    je   .check_state
+    cmp  dword [ebp + ecx*8 + 4], TAG_NIL
+    jne  err_type_iter
+.check_state:
+    cmp  dword [ebp + ecx*8 + 12], TAG_TAB
+    jne  err_type_iter
+    push edx
+    push ecx
+    lea  eax, [ebp + ecx*8 + 32]   ; out value R[A+4]
+    push eax
+    lea  eax, [ebp + ecx*8 + 24]   ; out key R[A+3]
+    push eax
+    lea  eax, [ebp + ecx*8 + 16]   ; current control R[A+2]
+    push eax
+    push dword [ebp + ecx*8 + 8]   ; table state value
+    call _p386_table_next
+    add  esp, 16
+    pop  ecx
+    pop  edx
+    test eax, eax
+    jnz  .got_entry
+    mov  dword [ebp + ecx*8 + 24], 0
+    mov  dword [ebp + ecx*8 + 28], TAG_NIL
+    mov  dword [ebp + ecx*8 + 32], 0
+    mov  dword [ebp + ecx*8 + 36], TAG_NIL
+    jmp  dispatch_next
+.got_entry:
+    cmp  edx, 2
+    jae  dispatch_next
+    cmp  edx, 1
+    jae  .one_result
+    jmp  dispatch_next
+.one_result:
+    mov  dword [ebp + ecx*8 + 32], 0
+    mov  dword [ebp + ecx*8 + 36], TAG_NIL
+    jmp  dispatch_next
+
+op_tforloop:
+    movzx ecx, ah                  ; A; R[A+3] is first result from TFORCALL
+    mov  ebx, eax
+    shr  ebx, 16
+    movsx ebx, bx                  ; sBx
+    cmp  dword [ebp + ecx*8 + 28], TAG_NIL
+    je   dispatch_next
+    mov  eax, [ebp + ecx*8 + 24]
+    mov  edx, [ebp + ecx*8 + 28]
+    mov  [ebp + ecx*8 + 16], eax   ; control R[A+2] = R[A+3]
+    mov  [ebp + ecx*8 + 20], edx
+    lea  esi, [esi + ebx*4]
+    jmp  dispatch_next
+
 op_return:
     movzx ecx, ah                  ; A
     shr  eax, 16
@@ -989,6 +1049,10 @@ err_type_tab:
 err_type_str:
     mov  dword [edi + VM_STATUS], ERR_TYPE
     mov  dword [edi + VM_ERROR_MSG], msg_type_str
+    jmp  done
+err_type_iter:
+    mov  dword [edi + VM_STATUS], ERR_TYPE
+    mov  dword [edi + VM_ERROR_MSG], msg_type_iter
     jmp  done
 err_bounds_pop4:
     add  esp, 4

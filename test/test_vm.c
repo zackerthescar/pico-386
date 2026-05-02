@@ -684,20 +684,71 @@ TEST(vm_forprep_requires_numeric_regs) {
     PASS();
 }
 
-TEST(vm_tfor_opcodes_are_explicitly_unimplemented) {
+TEST(vm_tfor_table_iterates_key_value_pairs) {
     VmFixture f;
     P386VMState vm;
     fx_init(&f);
-    fx_emit(&f, P386_ABC(P386_OP_TFORCALL, 0, 0, 0));
-    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
-    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_fixture(&f, &vm));
-    ASSERT_STR_EQ("opcode not implemented yet", vm.error_msg);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(2), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(10), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(20), P386_TAG_NUM);
+    fx_const(&f, 0, P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_NEWTABLE, 0, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 6, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 7, 2));
+    fx_emit(&f, P386_ABC(P386_OP_SETTABLE, 0, P386_RK_REG(6), P386_RK_REG(7)));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 6, 1));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 7, 3));
+    fx_emit(&f, P386_ABC(P386_OP_SETTABLE, 0, P386_RK_REG(6), P386_RK_REG(7)));
+    fx_emit(&f, P386_ABC(P386_OP_LOADN, 1, 1, 0));  /* iterator: nil table-next sentinel */
+    fx_emit(&f, P386_ABC(P386_OP_MOVE, 2, 0, 0));   /* state: table */
+    fx_emit(&f, P386_ABC(P386_OP_LOADN, 3, 1, 0));  /* control: nil */
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 8, 4));     /* sum = 0 */
+    fx_emit(&f, P386_ABC(P386_OP_TFORCALL, 1, 0, 2));
+    fx_emit(&f, P386_ASBX(P386_OP_TFORLOOP, 1, 1));
+    fx_emit(&f, P386_ASBX(P386_OP_JMP, 0, 2));
+    fx_emit(&f, P386_ABC(P386_OP_ADD, 8, P386_RK_REG(8), P386_RK_REG(5)));
+    fx_emit(&f, P386_ASBX(P386_OP_JMP, 0, -5));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 8, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 3, P386_FP_INT(2));
+    ASSERT_NIL(vm, 4);
+    ASSERT_NIL(vm, 5);
+    ASSERT_NUM(vm, 8, P386_FP_INT(30));
+    PASS();
+}
 
+TEST(vm_tfor_ends_immediately_on_empty_table) {
+    VmFixture f;
+    P386VMState vm;
     fx_init(&f);
-    fx_emit(&f, P386_ASBX(P386_OP_TFORLOOP, 0, 0));
+    fx_const(&f, P386_FP_INT(123), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_NEWTABLE, 0, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_LOADN, 1, 1, 0));
+    fx_emit(&f, P386_ABC(P386_OP_MOVE, 2, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_LOADN, 3, 1, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 6, 0));
+    fx_emit(&f, P386_ABC(P386_OP_TFORCALL, 1, 0, 2));
+    fx_emit(&f, P386_ASBX(P386_OP_TFORLOOP, 1, 1));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 6, 2, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 6, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 6, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NIL(vm, 4);
+    ASSERT_NIL(vm, 5);
+    ASSERT_NUM(vm, 6, P386_FP_INT(123));
+    PASS();
+}
+
+TEST(vm_tfor_requires_table_state) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_emit(&f, P386_ABC(P386_OP_LOADN, 0, 3, 0));
+    fx_emit(&f, P386_ABC(P386_OP_TFORCALL, 0, 0, 2));
     fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
-    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_fixture(&f, &vm));
-    ASSERT_STR_EQ("opcode not implemented yet", vm.error_msg);
+    ASSERT_EQ(P386_VM_ERR_TYPE, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("expected table iterator state", vm.error_msg);
     PASS();
 }
 

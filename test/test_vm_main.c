@@ -40,7 +40,9 @@ void main() {
     RUN_TEST(vm_forloop_positive_step_accumulates_sum);
     RUN_TEST(vm_forloop_negative_step_accumulates_sum);
     RUN_TEST(vm_forprep_requires_numeric_regs);
-    RUN_TEST(vm_tfor_opcodes_are_explicitly_unimplemented);
+    RUN_TEST(vm_tfor_table_iterates_key_value_pairs);
+    RUN_TEST(vm_tfor_ends_immediately_on_empty_table);
+    RUN_TEST(vm_tfor_requires_table_state);
     RUN_TEST(vm_len_string_constant_returns_fixed_point_length);
     RUN_TEST(vm_peek_reads_p8_ram_as_fixed_point_number);
     RUN_TEST(vm_peek2_reads_little_endian_and_wraps_64k);

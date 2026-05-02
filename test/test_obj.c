@@ -202,6 +202,36 @@ static void test_table_grow(void) {
     }
 }
 
+static void test_table_next(void) {
+    P386Table *t = p386_table_new(0, 0);
+    P386Value key = v_nil();
+    P386Value out_k, out_v;
+    P386Value k1 = v_num(1), k2 = v_num(2), k3 = v_num(3);
+    P386Value v10 = v_num(10), v20 = v_num(20), v30 = v_num(30);
+    P386Value nilv = v_nil();
+
+    CHECK(p386_table_next(t, &key, &out_k, &out_v) == 0);
+    CHECK(out_k.tag == P386_TAG_NIL && out_v.tag == P386_TAG_NIL);
+
+    p386_table_set(t, &k1, &v10);
+    p386_table_set(t, &k2, &v20);
+    p386_table_set(t, &k3, &v30);
+    p386_table_set(t, &k2, &nilv);
+
+    CHECK(p386_table_next(t, &key, &out_k, &out_v) == 1);
+    CHECK(out_k.tag == P386_TAG_NUM && out_k.value == (1 << 16));
+    CHECK(out_v.tag == P386_TAG_NUM && out_v.value == (10 << 16));
+
+    key = out_k;
+    CHECK(p386_table_next(t, &key, &out_k, &out_v) == 1);
+    CHECK(out_k.tag == P386_TAG_NUM && out_k.value == (3 << 16));
+    CHECK(out_v.tag == P386_TAG_NUM && out_v.value == (30 << 16));
+
+    key = out_k;
+    CHECK(p386_table_next(t, &key, &out_k, &out_v) == 0);
+    CHECK(out_k.tag == P386_TAG_NIL && out_v.tag == P386_TAG_NIL);
+}
+
 int main(void) {
     test_intern();
     test_num_to_string();
@@ -209,6 +239,7 @@ int main(void) {
     test_table_basic();
     test_table_string_keys();
     test_table_grow();
+    test_table_next();
     if (failures) {
         fprintf(stderr, "\n%d/%d FAILED\n", failures, total);
         return 1;
