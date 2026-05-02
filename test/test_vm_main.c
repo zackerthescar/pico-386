@@ -47,5 +47,10 @@ void main() {
     RUN_TEST(vm_peek_reads_p8_ram_as_fixed_point_number);
     RUN_TEST(vm_peek2_reads_little_endian_and_wraps_64k);
     RUN_TEST(vm_peek_requires_numeric_address);
+    RUN_TEST(vm_loader_rejects_unknown_const_tag);
+    RUN_TEST(vm_loader_rejects_str_const_index_out_of_range);
+    RUN_TEST(vm_forloop_zero_step_traps);
+    RUN_TEST(vm_setfield_getfield_round_trip_string_key);
+    RUN_TEST(vm_getfield_requires_string_const);
     TEST_REPORT();
 }

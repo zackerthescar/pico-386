@@ -809,3 +809,77 @@ TEST(vm_peek_requires_numeric_address) {
     ASSERT_STR_EQ("expected number", vm.error_msg);
     PASS();
 }
+
+TEST(vm_loader_rejects_unknown_const_tag) {
+    VmFixture f;
+    unsigned long len;
+    P386LoadedProgram p;
+    fx_init(&f);
+    fx_const(&f, 0, 99); /* unknown tag */
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    fx_finish(&f, &len);
+    ASSERT_FALSE(p386_program_load(f.buf, len, &p));
+    PASS();
+}
+
+TEST(vm_loader_rejects_str_const_index_out_of_range) {
+    VmFixture f;
+    unsigned long len;
+    P386LoadedProgram p;
+    fx_init(&f);
+    /* STR const referring to nonexistent string idx 5; n_strings stays 0 */
+    fx_const(&f, 5, P386_TAG_STR);
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    fx_finish(&f, &len);
+    ASSERT_FALSE(p386_program_load(f.buf, len, &p));
+    PASS();
+}
+
+TEST(vm_forloop_zero_step_traps) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(3), P386_TAG_NUM);
+    fx_const(&f, 0, P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 1));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 2, 2)); /* step = 0 */
+    fx_emit(&f, P386_ASBX(P386_OP_FORPREP, 0, 0));
+    fx_emit(&f, P386_ASBX(P386_OP_FORLOOP, 0, -1));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_TYPE, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("for loop step must be non-zero", vm.error_msg);
+    PASS();
+}
+
+TEST(vm_setfield_getfield_round_trip_string_key) {
+    VmFixture f;
+    P386VMState vm;
+    int sid;
+    fx_init(&f);
+    sid = fx_string(&f, "hp");
+    fx_const(&f, sid, P386_TAG_STR);
+    fx_const(&f, P386_FP_INT(42), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_NEWTABLE, 0, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 1)); /* R[1] = 42 */
+    fx_emit(&f, P386_ABC(P386_OP_SETFIELD, 0, 0, 1)); /* t["hp"] = R[1] */
+    fx_emit(&f, P386_ABC(P386_OP_GETFIELD, 2, 0, 0)); /* R[2] = t["hp"] */
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 2, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 2, P386_FP_INT(42));
+    PASS();
+}
+
+TEST(vm_getfield_requires_string_const) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM); /* not a string */
+    fx_emit(&f, P386_ABC(P386_OP_NEWTABLE, 0, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_GETFIELD, 1, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 1, 2, 0));
+    ASSERT_EQ(P386_VM_ERR_TYPE, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("expected string or number", vm.error_msg);
+    PASS();
+}

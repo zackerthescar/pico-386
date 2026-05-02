@@ -43,12 +43,19 @@ int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out)
     out->string_entries = (const P386StringEntry *)(buf + h->string_table_offset);
     out->bytecode_section = buf + h->bytecode_section_offset;
 
+    for (i = 0; i < h->n_strings; i++) {
+        const P386StringEntry *s = &out->string_entries[i];
+        if (!range_ok(s->data_off, s->len, size)) return 0;
+    }
+
     for (i = 0; i < h->n_protos; i++) {
         const P386ProtoEntry *p = &out->protos[i];
+        const uint8_t *consts;
         uint32_t code_end;
         uint32_t const_end;
         uint32_t upval_len;
         uint32_t const_len;
+        uint32_t k;
 
         if ((p->bytecode_off & 3U) != 0) return 0;
         if ((p->bytecode_len & 3U) != 0) return 0;
@@ -63,11 +70,21 @@ int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out)
         if (p->upvals_off < const_end) return 0;
         if (!range_ok(h->bytecode_section_offset + p->upvals_off, upval_len, size)) return 0;
         if (p->n_regs == 0) return 0;
-    }
 
-    for (i = 0; i < h->n_strings; i++) {
-        const P386StringEntry *s = &out->string_entries[i];
-        if (!range_ok(s->data_off, s->len, size)) return 0;
+        consts = out->bytecode_section + p->consts_off;
+        for (k = 0; k < p->n_consts; k++) {
+            uint32_t cval = (uint32_t)consts[k*8] | ((uint32_t)consts[k*8+1]<<8) |
+                            ((uint32_t)consts[k*8+2]<<16) | ((uint32_t)consts[k*8+3]<<24);
+            uint32_t ctag = (uint32_t)consts[k*8+4] | ((uint32_t)consts[k*8+5]<<8) |
+                            ((uint32_t)consts[k*8+6]<<16) | ((uint32_t)consts[k*8+7]<<24);
+            switch (ctag) {
+            case 0: /* NIL  */ if (cval != 0) return 0; break;
+            case 1: /* BOOL */ if (cval > 1) return 0; break;
+            case 2: /* NUM  */ break;
+            case 3: /* STR  */ if (cval >= h->n_strings) return 0; break;
+            default: return 0;
+            }
+        }
     }
 
     return 1;

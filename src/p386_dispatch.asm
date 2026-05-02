@@ -12,6 +12,7 @@ msg_type_tab   db 'expected table',0
 msg_type_str   db 'expected string or number',0
 msg_type_iter  db 'expected table iterator state',0
 msg_oom        db 'out of memory',0
+msg_for_step   db 'for loop step must be non-zero',0
 
 extern _p386_table_new
 extern _p386_table_get
@@ -384,71 +385,100 @@ op_settable:
     add  esp, 24
     jmp  dispatch_next
 
+; load_kstr: const idx zero-extended in edx. on success eax=interned String*,
+; ecx=TAG_STR, CF=0. on failure sets vm error and CF=1. clobbers ebx.
+load_kstr:
+    mov  ebx, [edi + VM_CURRENT_PROTO]
+    movzx eax, byte [ebx + PE_N_CONSTS]
+    cmp  edx, eax
+    jae  .bounds
+    mov  eax, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  eax, [ebx + PE_CONSTS_OFF]
+    mov  ecx, [eax + edx*8 + 4]
+    cmp  ecx, TAG_STR
+    jne  .typestr
+    mov  eax, [eax + edx*8]
+    mov  edx, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
+    lea  edx, [edx + eax*8]
+    push dword [edx + 4]
+    mov  eax, [edi + VM_PROGRAM + LP_BUF]
+    add  eax, [edx]
+    push eax
+    call _p386_string_intern
+    add  esp, 8
+    test eax, eax
+    jz   .oom
+    mov  ecx, TAG_STR
+    clc
+    ret
+.bounds:
+    mov  dword [edi + VM_STATUS], ERR_BOUNDS
+    mov  dword [edi + VM_ERROR_MSG], msg_bounds
+    stc
+    ret
+.typestr:
+    mov  dword [edi + VM_STATUS], ERR_TYPE
+    mov  dword [edi + VM_ERROR_MSG], msg_type_str
+    stc
+    ret
+.oom:
+    mov  dword [edi + VM_STATUS], ERR_BOUNDS
+    mov  dword [edi + VM_ERROR_MSG], msg_oom
+    stc
+    ret
+
 op_getfield:
-    movzx ecx, ah
+    movzx ecx, ah                  ; A
     mov  [dest_tmp], ecx
     shr  eax, 16
-    movzx ebx, al
+    movzx ebx, al                  ; B
     mov  edx, [ebp + ebx*8 + 4]
     cmp  edx, TAG_TAB
     jne  err_type_tab
-    mov  ebx, [ebp + ebx*8]
-    movzx edx, ah
-    mov  ecx, [edi + VM_CURRENT_PROTO]
-    movzx eax, byte [ecx + PE_N_CONSTS]
-    cmp  edx, eax
-    jae  err_bounds
-    mov  eax, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
-    add  eax, [ecx + PE_CONSTS_OFF]
-    mov  ecx, [eax + edx*8 + 4]
-    mov  eax, [eax + edx*8]
-    push ecx
-    push eax
-    push ebx
+    push dword [ebp + ebx*8]       ; save table ptr
+    movzx edx, ah                  ; C: const idx
+    call load_kstr
+    pop  ebx                       ; restore table ptr
+    jc   done
+    push ecx                       ; key tag (TAG_STR)
+    push eax                       ; key value
     mov  ecx, [dest_tmp]
     lea  ecx, [ebp + ecx*8]
-    push ecx
-    lea  ecx, [esp + 8]
-    push ecx
-    push dword [esp + 8]
+    push ecx                       ; out
+    lea  ecx, [esp + 4]
+    push ecx                       ; key ptr
+    push ebx                       ; table
     call _p386_table_get
     add  esp, 12
-    add  esp, 12
+    add  esp, 8
     jmp  dispatch_next
 
 op_setfield:
-    push eax
-    movzx ebx, ah
+    movzx ebx, ah                  ; A (table reg)
     mov  ecx, [ebp + ebx*8 + 4]
     cmp  ecx, TAG_TAB
-    jne  err_type_tab_pop4
-    mov  ebx, [ebp + ebx*8]
-    mov  eax, [esp]
+    jne  err_type_tab
+    push dword [ebp + ebx*8]       ; table ptr
+    push eax                       ; save instruction word
     shr  eax, 16
-    movzx edx, al
-    mov  ecx, [edi + VM_CURRENT_PROTO]
-    movzx eax, byte [ecx + PE_N_CONSTS]
-    cmp  edx, eax
-    jae  err_bounds_pop4
-    mov  eax, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
-    add  eax, [ecx + PE_CONSTS_OFF]
-    mov  ecx, [eax + edx*8 + 4]
-    mov  eax, [eax + edx*8]
-    push ecx
-    push eax
-    mov  edx, [esp + 8]
-    shr  edx, 24
-    push dword [ebp + edx*8 + 4]
-    push dword [ebp + edx*8]
-    lea  eax, [esp + 0]
-    lea  ecx, [esp + 8]
+    movzx edx, al                  ; B (const idx)
+    call load_kstr
+    pop  edx                       ; instruction word
+    pop  ebx                       ; table ptr
+    jc   done
+    shr  edx, 24                   ; C (value reg)
+    push ecx                       ; key tag
+    push eax                       ; key value
+    push dword [ebp + edx*8 + 4]   ; val tag
+    push dword [ebp + edx*8]       ; val value
+    lea  eax, [esp + 0]            ; val ptr
+    lea  ecx, [esp + 8]            ; key ptr
     push eax
     push ecx
-    push ebx
+    push ebx                       ; table
     call _p386_table_set
     add  esp, 12
     add  esp, 16
-    add  esp, 4
     jmp  dispatch_next
 
 op_concat:
@@ -891,6 +921,8 @@ op_forloop:
     cmp  dword [ebp + ecx*8 + 20], TAG_NUM
     jne  err_type_num
     mov  eax, [ebp + ecx*8 + 16]   ; step
+    test eax, eax
+    jz   err_for_step
     mov  edx, [ebp + ecx*8]        ; idx
     add  edx, eax                  ; idx += step
     mov  [ebp + ecx*8], edx
@@ -1028,6 +1060,10 @@ err_bounds_pop4:
 err_oom:
     mov  dword [edi + VM_STATUS], ERR_BOUNDS
     mov  dword [edi + VM_ERROR_MSG], msg_oom
+    jmp  done
+err_for_step:
+    mov  dword [edi + VM_STATUS], ERR_TYPE
+    mov  dword [edi + VM_ERROR_MSG], msg_for_step
     jmp  done
 bad_opcode:
     mov  dword [edi + VM_STATUS], ERR_OPCODE
