@@ -641,7 +641,7 @@ pub extern "C" fn p8_program_num_constants(prog: P8Program) -> u32 {
 pub extern "C" fn p8_program_num_protos(prog: P8Program) -> u32 {
     if prog.is_null() { return 0; }
     let proto = unsafe { &*prog };
-    proto.prototypes.len() as u32
+    proto.proto_count
 }
 
 /// Validate-only entry point (backwards compat with test harness).

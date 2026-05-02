@@ -55,6 +55,15 @@ void main() {
     RUN_TEST(vm_setfield_getfield_round_trip_string_key);
     RUN_TEST(vm_getfield_requires_string_const);
     RUN_TEST(vm_call_cfunc_noop_pads_requested_results);
+    RUN_TEST(vm_closure_creates_func_value);
+    RUN_TEST(vm_call_lua_fixed_args_returns_sum);
+    RUN_TEST(vm_call_lua_missing_args_are_nil);
+    RUN_TEST(vm_call_lua_pads_requested_results);
+    RUN_TEST(vm_call_lua_truncates_extra_results);
+    RUN_TEST(vm_call_lua_want_all_returns_actual_count);
+    RUN_TEST(vm_call_lua_vararg_args_traps);
+    RUN_TEST(vm_return_vararg_traps_in_lua_frame);
+    RUN_TEST(vm_call_lua_depth_overflow_traps);
     RUN_TEST(vm_call_requires_cfunc);
     TEST_REPORT();
 }

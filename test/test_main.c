@@ -55,6 +55,10 @@ void main() {
     RUN_TEST(compile_constant_overflow_returns_null);
     RUN_TEST(compile_branch_local_scope_does_not_leak);
     RUN_TEST(compile_lua_function_call_runs_vm);
+    RUN_TEST(compile_local_function_call_runs_vm);
+    RUN_TEST(compile_function_literal_call_runs_vm);
+    RUN_TEST(compile_nested_noncapturing_function_call_runs_vm);
+    RUN_TEST(compile_captured_local_rejected_until_upvalues);
 
     TEST_REPORT();
 }

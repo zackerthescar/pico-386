@@ -8,6 +8,7 @@ const MAX_REG: u8 = 126;
 
 pub struct Compiler {
     names: NameTable,
+    parent_locals: Vec<Name>,
 }
 
 #[derive(Clone, Copy)]
@@ -18,7 +19,11 @@ struct Local {
 
 impl Compiler {
     pub fn new(names: NameTable) -> Self {
-        Self { names }
+        Self { names, parent_locals: Vec::new() }
+    }
+
+    fn child(&self, parent_locals: Vec<Name>) -> Self {
+        Self { names: self.names.clone(), parent_locals }
     }
 
     pub fn compile_chunk(&self, chunk: Chunk) -> Option<FuncProto> {
@@ -138,6 +143,10 @@ impl<'a> CodeGen<'a> {
 
     fn find_local(&self, name: Name) -> Option<u8> {
         self.locals.iter().rev().find(|l| l.name == name).map(|l| l.reg)
+    }
+
+    fn references_parent_local(&self, name: Name) -> bool {
+        self.compiler.parent_locals.iter().any(|&n| n == name)
     }
 
     fn add_const(&mut self, c: Constant) -> u8 {
@@ -543,6 +552,9 @@ impl<'a> CodeGen<'a> {
             Var::Name(n) => {
                 if let Some(src) = self.find_local(*n) {
                     self.emit(abc(P386_OP_MOVE, dst, src, 0));
+                } else if self.references_parent_local(*n) {
+                    self.failed = true;
+                    self.emit(abc(P386_OP_LOADN, dst, 1, 0));
                 } else {
                     let slot = self.global_slot(*n);
                     self.emit(abc(P386_OP_GETGLOBAL, dst, slot, 0));
@@ -567,6 +579,8 @@ impl<'a> CodeGen<'a> {
             Var::Name(n) => {
                 if let Some(dst) = self.find_local(*n) {
                     self.emit(abc(P386_OP_MOVE, dst, src, 0));
+                } else if self.references_parent_local(*n) {
+                    self.failed = true;
                 } else {
                     let slot = self.global_slot(*n);
                     self.emit(abc(P386_OP_SETGLOBAL, src, slot, 0));
@@ -587,7 +601,10 @@ impl<'a> CodeGen<'a> {
 
     fn add_function_proto(&mut self, params: &[Name], body: &[Stat]) -> u16 {
         let idx = self.prototypes.len().saturating_add(1).min(65535) as u16;
-        let mut child = CodeGen::new(self.compiler);
+        let mut parent_locals = self.compiler.parent_locals.clone();
+        parent_locals.extend(self.locals.iter().map(|l| l.name));
+        let child_compiler = self.compiler.child(parent_locals);
+        let mut child = CodeGen::new(&child_compiler);
         child.n_params = params.len().min(255) as u8;
         child.push_scope();
         for n in params { child.alloc_local(*n); }

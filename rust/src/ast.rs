@@ -171,6 +171,7 @@ pub enum Suffix {
 const NT_BUCKETS: usize = 64;
 const NT_BUCKET_MASK: u8 = (NT_BUCKETS - 1) as u8;
 
+#[derive(Clone)]
 pub struct NameTable {
     names: Vec<Vec<u8>>,
     buckets: [Vec<u16>; NT_BUCKETS],

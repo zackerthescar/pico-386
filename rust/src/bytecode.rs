@@ -88,6 +88,7 @@ pub enum Constant {
 /// The legacy C API name predates the container format.
 pub struct FuncProto {
     pub code: Vec<u8>,
+    pub proto_count: u32,
     pub constants: Vec<Constant>,
     pub prototypes: Vec<FuncProto>,
     pub instructions: Vec<u32>,
@@ -97,8 +98,9 @@ pub struct FuncProto {
 
 impl FuncProto {
     pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, n_regs: u8, n_params: u8) -> Self {
+        let proto_count = count_protos(&prototypes);
         let code = emit_program(&instructions, &constants, &prototypes, n_regs, n_params);
-        Self { code, constants, prototypes, instructions, n_regs, n_params }
+        Self { code, proto_count, constants, prototypes, instructions, n_regs, n_params }
     }
 }
 
@@ -144,10 +146,42 @@ fn collect_all_strings(constants: &[Constant], protos: &[FuncProto], out: &mut V
     for p in protos { collect_all_strings(&p.constants, &p.prototypes, out); }
 }
 
-fn flatten_protos<'a>(root: (&'a [u32], &'a [Constant], u8, u8), protos: &'a [FuncProto], out: &mut Vec<(&'a [u32], &'a [Constant], u8, u8)>) {
-    out.push(root);
+fn count_protos(protos: &[FuncProto]) -> u32 {
+    let mut count = 1u32;
     for p in protos {
-        flatten_protos((&p.instructions, &p.constants, p.n_regs, p.n_params), &p.prototypes, out);
+        count = count.saturating_add(count_protos(&p.prototypes));
+    }
+    count
+}
+
+fn rewrite_nested_closure_indices(insns: &[u32], child_base: u16, child_protos: &[FuncProto]) -> Vec<u32> {
+    let mut child_offsets = Vec::new();
+    let mut next = child_base;
+    for p in child_protos {
+        child_offsets.push(next);
+        next = next.saturating_add(p.proto_count.min(u16::MAX as u32) as u16);
+    }
+
+    insns.iter().map(|&ins| {
+        let op = (ins & 0xff) as u8;
+        if op != P386_OP_CLOSURE { return ins; }
+        let local_idx = ((ins >> 16) & 0xffff) as usize;
+        if local_idx == 0 { return ins; }
+        let child_idx = local_idx - 1;
+        if child_idx >= child_offsets.len() { return ins; }
+        let bx = child_offsets[child_idx] as u32;
+        (ins & 0x0000_ffff) | (bx << 16)
+    }).collect()
+}
+
+fn flatten_protos<'a>(root: (&'a [u32], &'a [Constant], u8, u8, &'a [FuncProto]), out: &mut Vec<(Vec<u32>, &'a [Constant], u8, u8)>) {
+    let root_index = out.len() as u16;
+    let child_base = root_index.saturating_add(1);
+    let (insns, consts, regs, params, children) = root;
+    let rewritten = rewrite_nested_closure_indices(insns, child_base, children);
+    out.push((rewritten, consts, regs, params));
+    for p in children {
+        flatten_protos((&p.instructions, &p.constants, p.n_regs, p.n_params, &p.prototypes), out);
     }
 }
 
@@ -155,7 +189,7 @@ pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[
     let mut strings = Vec::new();
     collect_all_strings(constants, prototypes, &mut strings);
     let mut protos = Vec::new();
-    flatten_protos((instructions, constants, n_regs, n_params), prototypes, &mut protos);
+    flatten_protos((instructions, constants, n_regs, n_params, prototypes), &mut protos);
     let n_protos = protos.len() as u32;
     let n_strings = strings.len() as u32;
 
@@ -194,7 +228,7 @@ pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[
 
     for (pi, (insns, consts, regs, params)) in protos.iter().enumerate() {
         let code_off = out.len() - bytecode_section_offset;
-        for &ins in *insns { push_u32(&mut out, ins); }
+        for &ins in insns { push_u32(&mut out, ins); }
         pad4(&mut out);
         let code_len = insns.len() * 4;
         let consts_off = out.len() - bytecode_section_offset;

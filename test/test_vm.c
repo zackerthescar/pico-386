@@ -140,6 +140,107 @@ static int run_fixture(VmFixture *f, P386VMState *vm) {
     return p386_vm_run(vm);
 }
 
+
+static unsigned char *fx_finish_two_proto(VmFixture *f, unsigned long *out_len,
+                                          const unsigned long *main_code, int main_n_code,
+                                          const P386Value *main_consts, int main_n_consts,
+                                          unsigned char main_n_regs,
+                                          const unsigned long *child_code, int child_n_code,
+                                          const P386Value *child_consts, int child_n_consts,
+                                          unsigned char child_n_params,
+                                          unsigned char child_n_regs) {
+    unsigned long proto_table_size = 2UL * PROTO_SIZE;
+    unsigned long str_off = PROTO_OFF + proto_table_size;
+    unsigned long bc_off = str_off;
+    unsigned long off = 0;
+    unsigned long main_code_off = 0;
+    unsigned long main_code_len = (unsigned long)main_n_code * 4UL;
+    unsigned long main_consts_off;
+    unsigned long main_upvals_off;
+    unsigned long child_code_off;
+    unsigned long child_code_len = (unsigned long)child_n_code * 4UL;
+    unsigned long child_consts_off;
+    unsigned long child_upvals_off;
+    unsigned long total;
+    int i;
+
+    memset(f, 0, sizeof(*f));
+
+    for (i = 0; i < main_n_code; i++) {
+        put32(f->buf + bc_off + off, main_code[i]);
+        off += 4;
+    }
+    main_consts_off = off;
+    for (i = 0; i < main_n_consts; i++) {
+        put32(f->buf + bc_off + off, (unsigned long)main_consts[i].value);
+        put32(f->buf + bc_off + off + 4, main_consts[i].tag);
+        off += 8;
+    }
+    main_upvals_off = off;
+
+    child_code_off = off;
+    for (i = 0; i < child_n_code; i++) {
+        put32(f->buf + bc_off + off, child_code[i]);
+        off += 4;
+    }
+    child_consts_off = off;
+    for (i = 0; i < child_n_consts; i++) {
+        put32(f->buf + bc_off + off, (unsigned long)child_consts[i].value);
+        put32(f->buf + bc_off + off + 4, child_consts[i].tag);
+        off += 8;
+    }
+    child_upvals_off = off;
+    total = bc_off + off;
+
+    fx_header32(f, HDR_MAGIC_OFF, P386_BC_MAGIC);
+    fx_header32(f, HDR_VERSION_OFF, P386_BC_VERSION);
+    fx_header32(f, HDR_TOTAL_SIZE_OFF, total);
+    fx_header32(f, HDR_N_PROTOS_OFF, 2);
+    fx_header32(f, HDR_N_STRINGS_OFF, 0);
+    fx_header32(f, HDR_PROTO_TABLE_OFF, PROTO_OFF);
+    fx_header32(f, HDR_STRING_TABLE_OFF, str_off);
+    fx_header32(f, HDR_BYTECODE_OFF, bc_off);
+
+    put32(f->buf + PROTO_OFF + 0 * PROTO_SIZE + PROTO_BYTECODE_OFF_OFF, main_code_off);
+    put32(f->buf + PROTO_OFF + 0 * PROTO_SIZE + PROTO_BYTECODE_LEN_OFF, main_code_len);
+    put32(f->buf + PROTO_OFF + 0 * PROTO_SIZE + PROTO_CONSTS_OFF_OFF, main_consts_off);
+    put32(f->buf + PROTO_OFF + 0 * PROTO_SIZE + PROTO_UPVALS_OFF_OFF, main_upvals_off);
+    f->buf[PROTO_OFF + 0 * PROTO_SIZE + PROTO_N_CONSTS_OFF] = (unsigned char)main_n_consts;
+    f->buf[PROTO_OFF + 0 * PROTO_SIZE + PROTO_N_PARAMS_OFF] = 0;
+    f->buf[PROTO_OFF + 0 * PROTO_SIZE + PROTO_N_REGS_OFF] = main_n_regs;
+    f->buf[PROTO_OFF + 0 * PROTO_SIZE + PROTO_N_UPVALS_OFF] = 0;
+    f->buf[PROTO_OFF + 0 * PROTO_SIZE + PROTO_FLAGS_OFF] = P386_PROTO_FLAG_MAIN;
+
+    put32(f->buf + PROTO_OFF + 1 * PROTO_SIZE + PROTO_BYTECODE_OFF_OFF, child_code_off);
+    put32(f->buf + PROTO_OFF + 1 * PROTO_SIZE + PROTO_BYTECODE_LEN_OFF, child_code_len);
+    put32(f->buf + PROTO_OFF + 1 * PROTO_SIZE + PROTO_CONSTS_OFF_OFF, child_consts_off);
+    put32(f->buf + PROTO_OFF + 1 * PROTO_SIZE + PROTO_UPVALS_OFF_OFF, child_upvals_off);
+    f->buf[PROTO_OFF + 1 * PROTO_SIZE + PROTO_N_CONSTS_OFF] = (unsigned char)child_n_consts;
+    f->buf[PROTO_OFF + 1 * PROTO_SIZE + PROTO_N_PARAMS_OFF] = child_n_params;
+    f->buf[PROTO_OFF + 1 * PROTO_SIZE + PROTO_N_REGS_OFF] = child_n_regs;
+    f->buf[PROTO_OFF + 1 * PROTO_SIZE + PROTO_N_UPVALS_OFF] = 0;
+    f->buf[PROTO_OFF + 1 * PROTO_SIZE + PROTO_FLAGS_OFF] = 0;
+
+    *out_len = total;
+    return f->buf;
+}
+
+static int run_two_proto_fixture(VmFixture *f, P386VMState *vm,
+                                 const unsigned long *main_code, int main_n_code,
+                                 const P386Value *main_consts, int main_n_consts,
+                                 unsigned char main_n_regs,
+                                 const unsigned long *child_code, int child_n_code,
+                                 const P386Value *child_consts, int child_n_consts,
+                                 unsigned char child_n_params,
+                                 unsigned char child_n_regs) {
+    unsigned long len;
+    unsigned char *buf = fx_finish_two_proto(f, &len, main_code, main_n_code, main_consts, main_n_consts, main_n_regs,
+                                             child_code, child_n_code, child_consts, child_n_consts,
+                                             child_n_params, child_n_regs);
+    if (!p386_vm_load(vm, buf, len)) return vm->status;
+    return p386_vm_run(vm);
+}
+
 #define ASSERT_TAG(vm, reg, t) ASSERT_EQ((t), (vm).value_stack[(reg)].tag)
 #define ASSERT_VAL(vm, reg, v) ASSERT_EQ((v), (vm).value_stack[(reg)].value)
 #define ASSERT_NUM(vm, reg, v) do { ASSERT_TAG(vm, reg, P386_TAG_NUM); ASSERT_VAL(vm, reg, v); } while(0)
@@ -946,6 +1047,215 @@ TEST(vm_call_cfunc_pairs_returns_iterator_state_nil) {
     PASS();
 }
 
+
+TEST(vm_closure_creates_func_value) {
+    VmFixture f;
+    P386VMState vm;
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 2, 0, 0, 4,
+        child_code, 1, 0, 0, 0, 1));
+    ASSERT_TAG(vm, 0, P386_TAG_FUNC);
+    ASSERT_NEQ(0, vm.value_stack[0].value);
+    ASSERT_EQ(0, vm.call_depth);
+    PASS();
+}
+
+TEST(vm_call_lua_fixed_args_returns_sum) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value main_consts[] = {
+        { P386_FP_INT(10), P386_TAG_NUM },
+        { P386_FP_INT(20), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABX(P386_OP_LOADK, 1, 0),
+        P386_ABX(P386_OP_LOADK, 2, 1),
+        P386_ABC(P386_OP_CALL, 0, 3, 2),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_ADD, 2, P386_RK_REG(0), P386_RK_REG(1)),
+        P386_ABC(P386_OP_RETURN, 2, 2, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 5, main_consts, 2, 4,
+        child_code, 2, 0, 0, 2, 4));
+    ASSERT_NUM(vm, 0, P386_FP_INT(30));
+    ASSERT_EQ(0, vm.call_depth);
+    PASS();
+}
+
+TEST(vm_call_lua_missing_args_are_nil) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value main_consts[] = {
+        { P386_FP_INT(99), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABX(P386_OP_LOADK, 1, 0),
+        P386_ABC(P386_OP_CALL, 0, 2, 2),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_RETURN, 1, 2, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 4, main_consts, 1, 4,
+        child_code, 1, 0, 0, 2, 3));
+    ASSERT_NIL(vm, 0);
+    PASS();
+}
+
+TEST(vm_call_lua_pads_requested_results) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value child_consts[] = {
+        { P386_FP_INT(7), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_CALL, 0, 1, 4),
+        P386_ABC(P386_OP_RETURN, 0, 4, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABX(P386_OP_LOADK, 0, 0),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 3, 0, 0, 4,
+        child_code, 2, child_consts, 1, 0, 2));
+    ASSERT_NUM(vm, 0, P386_FP_INT(7));
+    ASSERT_NIL(vm, 1);
+    ASSERT_NIL(vm, 2);
+    PASS();
+}
+
+TEST(vm_call_lua_truncates_extra_results) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value child_consts[] = {
+        { P386_FP_INT(1), P386_TAG_NUM },
+        { P386_FP_INT(2), P386_TAG_NUM },
+        { P386_FP_INT(3), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_CALL, 0, 1, 2),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABX(P386_OP_LOADK, 0, 0),
+        P386_ABX(P386_OP_LOADK, 1, 1),
+        P386_ABX(P386_OP_LOADK, 2, 2),
+        P386_ABC(P386_OP_RETURN, 0, 4, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 3, 0, 0, 4,
+        child_code, 4, child_consts, 3, 0, 3));
+    ASSERT_NUM(vm, 0, P386_FP_INT(1));
+    ASSERT_EQ((int)(vm.value_stack + 1), (int)vm.top);
+    PASS();
+}
+
+TEST(vm_call_lua_want_all_returns_actual_count) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value child_consts[] = {
+        { P386_FP_INT(4), P386_TAG_NUM },
+        { P386_FP_INT(5), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_CALL, 0, 1, 0),
+        P386_ABC(P386_OP_RETURN, 0, 3, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABX(P386_OP_LOADK, 0, 0),
+        P386_ABX(P386_OP_LOADK, 1, 1),
+        P386_ABC(P386_OP_RETURN, 0, 3, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 3, 0, 0, 4,
+        child_code, 3, child_consts, 2, 0, 2));
+    ASSERT_NUM(vm, 0, P386_FP_INT(4));
+    ASSERT_NUM(vm, 1, P386_FP_INT(5));
+    PASS();
+}
+
+TEST(vm_call_lua_vararg_args_traps) {
+    VmFixture f;
+    P386VMState vm;
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_CALL, 0, 0, 1),
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+
+    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_two_proto_fixture(&f, &vm,
+        main_code, 3, 0, 0, 4,
+        child_code, 1, 0, 0, 0, 1));
+    ASSERT_STR_EQ("variable call/return not implemented", vm.error_msg);
+    PASS();
+}
+
+TEST(vm_return_vararg_traps_in_lua_frame) {
+    VmFixture f;
+    P386VMState vm;
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_CALL, 0, 1, 1),
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_RETURN, 0, 0, 0)
+    };
+
+    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_two_proto_fixture(&f, &vm,
+        main_code, 3, 0, 0, 4,
+        child_code, 1, 0, 0, 0, 1));
+    ASSERT_STR_EQ("variable call/return not implemented", vm.error_msg);
+    PASS();
+}
+
+TEST(vm_call_lua_depth_overflow_traps) {
+    VmFixture f;
+    P386VMState vm;
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_CALL, 0, 1, 1),
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_CALL, 0, 1, 1),
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+
+    ASSERT_EQ(P386_VM_ERR_BOUNDS, run_two_proto_fixture(&f, &vm,
+        main_code, 3, 0, 0, 4,
+        child_code, 3, 0, 0, 0, 4));
+    ASSERT_STR_EQ("register/constant out of bounds", vm.error_msg);
+    ASSERT_EQ(P386_CALL_STACK_DEPTH, vm.call_depth);
+    PASS();
+}
 TEST(vm_call_requires_cfunc) {
     VmFixture f;
     P386VMState vm;
