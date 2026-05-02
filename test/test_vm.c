@@ -912,3 +912,49 @@ TEST(vm_getfield_requires_string_const) {
     ASSERT_STR_EQ("expected string or number", vm.error_msg);
     PASS();
 }
+
+TEST(vm_call_cfunc_noop_pads_requested_results) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(77), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_GETGLOBAL, 0, P386_BUILTIN_CLS, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 0));
+    fx_emit(&f, P386_ABC(P386_OP_CALL, 0, 2, 3)); /* cls(77), want two results */
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 3, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NIL(vm, 0);
+    ASSERT_NIL(vm, 1);
+    PASS();
+}
+
+TEST(vm_call_cfunc_pairs_returns_iterator_state_nil) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_emit(&f, P386_ABC(P386_OP_NEWTABLE, 0, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_GETGLOBAL, 1, P386_BUILTIN_PAIRS, 0));
+    fx_emit(&f, P386_ABC(P386_OP_MOVE, 2, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_CALL, 1, 2, 4)); /* pairs(t), want 3 */
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 1, 4, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_EQ(P386_TAG_CFUNC, vm.value_stack[1].tag);
+    ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_pairs, vm.value_stack[1].value);
+    ASSERT_EQ(P386_TAG_TAB, vm.value_stack[2].tag);
+    ASSERT_EQ(vm.value_stack[0].value, vm.value_stack[2].value);
+    ASSERT_NIL(vm, 3);
+    PASS();
+}
+
+TEST(vm_call_requires_cfunc) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_CALL, 0, 1, 1));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_TYPE, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("expected function", vm.error_msg);
+    PASS();
+}

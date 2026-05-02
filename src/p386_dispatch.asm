@@ -11,6 +11,7 @@ msg_unimpl     db 'opcode not implemented yet',0
 msg_type_tab   db 'expected table',0
 msg_type_str   db 'expected string or number',0
 msg_type_iter  db 'expected table iterator state',0
+msg_type_func  db 'expected function',0
 msg_oom        db 'out of memory',0
 msg_for_step   db 'for loop step must be non-zero',0
 
@@ -120,6 +121,8 @@ dispatch_table:
     dd op_tforcall
 %elif i = 0x48
     dd op_tforloop
+%elif i = 0x51
+    dd op_call
 %elif i = 0x53
     dd op_return
 %else
@@ -996,6 +999,98 @@ op_tforloop:
     lea  esi, [esi + ebx*4]
     jmp  dispatch_next
 
+op_call:
+    movzx ecx, ah                  ; A: function register
+    mov  edx, eax
+    shr  edx, 16
+    cmp  dword [ebp + ecx*8 + 4], TAG_CFUNC
+    jne  err_type_func
+    mov  ebx, [ebp + ecx*8]        ; raw C function pointer
+    test ebx, ebx
+    jz   err_type_func
+    movzx eax, dl                  ; B = nargs + 1 (0 => from top)
+    test eax, eax
+    jnz  .fixed_args
+    mov  eax, [edi + VM_TOP]
+    lea  edx, [ebp + ecx*8 + 8]    ; first arg R[A+1]
+    sub  eax, edx
+    sar  eax, 3
+    jns  .args_ready
+    xor  eax, eax
+    jmp  .args_ready
+.fixed_args:
+    dec  eax                       ; nargs
+.args_ready:
+    movzx edx, dh                  ; C = want_rets + 1 (0 => all)
+    test edx, edx
+    jz   .want_all
+    dec  edx
+.want_all:
+    push esi
+    push ecx
+    push edx
+    push eax
+    push edx                       ; want_rets
+    push eax                       ; nargs
+    lea  eax, [ebp + ecx*8 + 8]    ; args/result window starts after func
+    push eax
+    push edi
+    call ebx
+    add  esp, 16
+    pop  ebx                       ; nargs
+    pop  edx                       ; want_rets (0 means all)
+    pop  ecx                       ; A
+    pop  esi
+    test eax, eax
+    js   .builtin_error
+    mov  ebx, eax                  ; actual return count
+    mov  eax, edx                  ; wanted fixed count, 0 => all actual
+    test eax, eax
+    jnz  .copy_fixed
+    mov  eax, ebx
+.copy_fixed:
+    push eax                       ; ncopy/result slots requested
+    xor  edx, edx
+.copy_loop:
+    cmp  edx, eax
+    jae  .copy_done
+    cmp  edx, ebx
+    jae  .pad_nil
+    push eax
+    push edi
+    mov  eax, ecx
+    add  eax, edx
+    lea  edi, [ebp + eax*8]        ; destination R[A+i]
+    inc  eax
+    lea  eax, [ebp + eax*8]        ; source R[A+i+1]
+    mov  esi, [eax]
+    mov  [edi], esi
+    mov  esi, [eax + 4]
+    mov  [edi + 4], esi
+    pop  edi
+    pop  eax
+    jmp  .next_slot
+.pad_nil:
+    push eax
+    mov  eax, ecx
+    add  eax, edx
+    mov  dword [ebp + eax*8], 0
+    mov  dword [ebp + eax*8 + 4], TAG_NIL
+    pop  eax
+.next_slot:
+    inc  edx
+    jmp  .copy_loop
+.copy_done:
+    pop  eax
+    add  eax, ecx
+    lea  edx, [ebp + eax*8]
+    mov  [edi + VM_TOP], edx
+    jmp  dispatch_next
+.builtin_error:
+    mov  [edi + VM_STATUS], eax
+    mov  dword [edi + VM_ERROR_MSG], msg_type_func
+    jmp  done
+
 op_return:
     movzx ecx, ah                  ; A
     shr  eax, 16
@@ -1053,6 +1148,10 @@ err_type_str:
 err_type_iter:
     mov  dword [edi + VM_STATUS], ERR_TYPE
     mov  dword [edi + VM_ERROR_MSG], msg_type_iter
+    jmp  done
+err_type_func:
+    mov  dword [edi + VM_STATUS], ERR_TYPE
+    mov  dword [edi + VM_ERROR_MSG], msg_type_func
     jmp  done
 err_bounds_pop4:
     add  esp, 4

@@ -54,5 +54,8 @@ void main() {
     RUN_TEST(vm_forloop_zero_step_traps);
     RUN_TEST(vm_setfield_getfield_round_trip_string_key);
     RUN_TEST(vm_getfield_requires_string_const);
+    RUN_TEST(vm_call_cfunc_noop_pads_requested_results);
+    RUN_TEST(vm_call_cfunc_pairs_returns_iterator_state_nil);
+    RUN_TEST(vm_call_requires_cfunc);
     TEST_REPORT();
 }

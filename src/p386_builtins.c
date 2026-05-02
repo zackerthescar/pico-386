@@ -31,22 +31,26 @@ int p386_builtin_cls(P386VMState *vm, P386Value *args,
 
 int p386_builtin_pairs(P386VMState *vm, P386Value *args,
                        uint8_t nargs, uint8_t want_rets) {
+    P386Value state;
     (void)vm;
-    (void)nargs;
-    /* Stub shape for Lua pairs(): iterator, state, initial-control. */
-    if (args && want_rets > 0) {
-        args[0].value = 0;
+    /* Lua pairs(t) returns next, t, nil.  The VM's TFORCALL has a fast path
+     * for this nil/CFUNC iterator shape and uses p386_table_next directly. */
+    state.value = 0;
+    state.tag = P386_TAG_NIL;
+    if (args && nargs > 0) state = args[0];
+    if (!args) return 0;
+    if (want_rets == 0 || want_rets > 0) {
+        args[0].value = (int32_t)(uintptr_t)p386_builtin_pairs;
         args[0].tag = P386_TAG_CFUNC;
     }
-    if (args && want_rets > 1) {
-        args[1].value = (nargs > 0) ? args[0].value : 0;
-        args[1].tag = (nargs > 0) ? args[0].tag : P386_TAG_NIL;
+    if (want_rets == 0 || want_rets > 1) {
+        args[1] = state;
     }
-    if (args && want_rets > 2) {
+    if (want_rets == 0 || want_rets > 2) {
         args[2].value = 0;
         args[2].tag = P386_TAG_NIL;
     }
-    return want_rets < 3 ? want_rets : 3;
+    return (want_rets == 0 || want_rets > 3) ? 3 : want_rets;
 }
 
 const P386BuiltinDef p386_builtin_defs[P386_BUILTIN_COUNT] = {
