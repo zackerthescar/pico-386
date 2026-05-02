@@ -23,6 +23,7 @@
 %define TAG_BOOL 1
 %define TAG_NUM  2
 %define TAG_STR  3
+%define TAG_TAB  4
 
 %define VM_HALTED 1
 %define ERR_OPCODE -2
@@ -37,6 +38,16 @@ msg_type_num   db 'expected number',0
 msg_div0       db 'division by zero',0
 msg_bounds     db 'register/constant out of bounds',0
 msg_unimpl     db 'opcode not implemented yet',0
+msg_type_tab   db 'expected table',0
+msg_type_str   db 'expected string or number',0
+msg_oom        db 'out of memory',0
+
+extern _p386_table_new
+extern _p386_table_get
+extern _p386_table_set
+extern _p386_table_len
+extern _p386_string_intern
+extern _p386_value_concat
 
 align 4
 dispatch_table:
@@ -56,6 +67,16 @@ dispatch_table:
     dd op_getglobal
 %elif i = 0x11
     dd op_setglobal
+%elif i = 0x18
+    dd op_newtable
+%elif i = 0x19
+    dd op_gettable
+%elif i = 0x1A
+    dd op_settable
+%elif i = 0x1B
+    dd op_getfield
+%elif i = 0x1C
+    dd op_setfield
 %elif i = 0x20
     dd op_add
 %elif i = 0x21
@@ -110,6 +131,8 @@ dispatch_table:
     dd op_peek
 %elif i = 0x3a
     dd op_peek2
+%elif i = 0x3B
+    dd op_concat
 %elif i = 0x40
     dd op_jmp
 %elif i = 0x41
@@ -135,6 +158,7 @@ dispatch_table:
 section .bss
 align 4
 dest_tmp resd 1
+scratch_a resd 4
 
 extern _p8_ram
 
@@ -181,6 +205,24 @@ load_rk:
     add  eax, [ecx + PE_CONSTS_OFF]
     mov  ecx, [eax + ebx*8 + 4]
     mov  eax, [eax + ebx*8]
+    cmp  ecx, TAG_STR
+    jne  .ret_ok
+    push edx
+    push eax
+    mov  edx, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
+    lea  edx, [edx + eax*8]
+    push dword [edx + 4]
+    mov  eax, [edi + VM_PROGRAM + LP_BUF]
+    add  eax, [edx]
+    push eax
+    call _p386_string_intern
+    add  esp, 8
+    pop  ecx
+    pop  edx
+    test eax, eax
+    jz   .bounds
+    mov  ecx, TAG_STR
+.ret_ok:
     clc
     ret
 .bounds:
@@ -220,6 +262,23 @@ op_loadk:
     add  eax, [ebx + PE_CONSTS_OFF]
     mov  ebx, [eax + edx*8]
     mov  edx, [eax + edx*8 + 4]
+    cmp  edx, TAG_STR
+    jne  .store_raw
+    push ecx
+    mov  eax, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
+    lea  eax, [eax + ebx*8]
+    push dword [eax + 4]
+    mov  ebx, [edi + VM_PROGRAM + LP_BUF]
+    add  ebx, [eax]
+    push ebx
+    call _p386_string_intern
+    add  esp, 8
+    pop  ecx
+    test eax, eax
+    jz   err_oom
+    mov  ebx, eax
+    mov  edx, TAG_STR
+.store_raw:
     mov  [ebp + ecx*8], ebx
     mov  [ebp + ecx*8 + 4], edx
     jmp  dispatch_next
@@ -268,6 +327,174 @@ op_setglobal:
     mov  [edi + VM_GLOBALS + edx*8], ebx
     mov  [edi + VM_GLOBALS + edx*8 + 4], ecx
     jmp  dispatch_next
+
+
+; --- objects -------------------------------------------------------------
+store_value_eax_ecx:
+    mov  ebx, [dest_tmp]
+    mov  [ebp + ebx*8], eax
+    mov  [ebp + ebx*8 + 4], ecx
+    jmp  dispatch_next
+
+op_newtable:
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    movzx edx, al
+    movzx eax, ah
+    push eax
+    push edx
+    call _p386_table_new
+    add  esp, 8
+    test eax, eax
+    jz   err_oom
+    mov  ecx, TAG_TAB
+    jmp  store_value_eax_ecx
+
+build_key_rk:
+    call load_rk
+    jc   done
+    mov  [scratch_a + 0], eax
+    mov  [scratch_a + 4], ecx
+    ret
+
+op_gettable:
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    movzx ebx, al
+    mov  ecx, [ebp + ebx*8 + 4]
+    cmp  ecx, TAG_TAB
+    jne  err_type_tab
+    mov  ebx, [ebp + ebx*8]
+    mov  [scratch_a + 8], ebx
+    mov  dl, ah
+    call build_key_rk
+    jc   done
+    mov  ebx, [dest_tmp]
+    lea  edx, [ebp + ebx*8]
+    push edx
+    lea  edx, [scratch_a]
+    push edx
+    push dword [scratch_a + 8]
+    call _p386_table_get
+    add  esp, 12
+    jmp  dispatch_next
+
+op_settable:
+    movzx ebx, ah
+    mov  ecx, [ebp + ebx*8 + 4]
+    cmp  ecx, TAG_TAB
+    jne  err_type_tab
+    mov  ebx, [ebp + ebx*8]
+    push eax
+    push ebx
+    sub  esp, 16
+    mov  edx, [esp + 20]
+    shr  edx, 16
+    call load_rk
+    jc   err_rk_pop24
+    mov  [esp + 0], eax
+    mov  [esp + 4], ecx
+    mov  edx, [esp + 20]
+    shr  edx, 24
+    call load_rk
+    jc   err_rk_pop24
+    mov  [esp + 8], eax
+    mov  [esp + 12], ecx
+    lea  eax, [esp + 8]
+    lea  edx, [esp + 0]
+    push eax
+    push edx
+    push dword [esp + 24]
+    call _p386_table_set
+    add  esp, 12
+    add  esp, 24
+    jmp  dispatch_next
+
+op_getfield:
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    movzx ebx, al
+    mov  edx, [ebp + ebx*8 + 4]
+    cmp  edx, TAG_TAB
+    jne  err_type_tab
+    mov  ebx, [ebp + ebx*8]
+    movzx edx, ah
+    mov  ecx, [edi + VM_CURRENT_PROTO]
+    movzx eax, byte [ecx + PE_N_CONSTS]
+    cmp  edx, eax
+    jae  err_bounds
+    mov  eax, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  eax, [ecx + PE_CONSTS_OFF]
+    mov  ecx, [eax + edx*8 + 4]
+    mov  eax, [eax + edx*8]
+    push ecx
+    push eax
+    push ebx
+    mov  ecx, [dest_tmp]
+    lea  ecx, [ebp + ecx*8]
+    push ecx
+    lea  ecx, [esp + 8]
+    push ecx
+    push dword [esp + 8]
+    call _p386_table_get
+    add  esp, 12
+    add  esp, 12
+    jmp  dispatch_next
+
+op_setfield:
+    push eax
+    movzx ebx, ah
+    mov  ecx, [ebp + ebx*8 + 4]
+    cmp  ecx, TAG_TAB
+    jne  err_type_tab_pop4
+    mov  ebx, [ebp + ebx*8]
+    mov  eax, [esp]
+    shr  eax, 16
+    movzx edx, al
+    mov  ecx, [edi + VM_CURRENT_PROTO]
+    movzx eax, byte [ecx + PE_N_CONSTS]
+    cmp  edx, eax
+    jae  err_bounds_pop4
+    mov  eax, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  eax, [ecx + PE_CONSTS_OFF]
+    mov  ecx, [eax + edx*8 + 4]
+    mov  eax, [eax + edx*8]
+    push ecx
+    push eax
+    mov  edx, [esp + 8]
+    shr  edx, 24
+    push dword [ebp + edx*8 + 4]
+    push dword [ebp + edx*8]
+    lea  eax, [esp + 0]
+    lea  ecx, [esp + 8]
+    push eax
+    push ecx
+    push ebx
+    call _p386_table_set
+    add  esp, 12
+    add  esp, 16
+    add  esp, 4
+    jmp  dispatch_next
+
+op_concat:
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    movzx ebx, al
+    movzx edx, ah
+    lea  eax, [ebp + edx*8]
+    push eax
+    lea  eax, [ebp + ebx*8]
+    push eax
+    call _p386_value_concat
+    add  esp, 8
+    test eax, eax
+    jz   err_type_str
+    mov  ecx, TAG_STR
+    jmp  store_value_eax_ecx
 
 ; --- numeric factory ----------------------------------------------------
 %macro NUM_BIN 2
@@ -552,25 +779,33 @@ op_not:
     jmp  store_bool_al
 
 op_len:
-    movzx edx, ah                    ; A
-    mov  [dest_tmp], edx
+    movzx ecx, ah                    ; A
+    mov  [dest_tmp], ecx
     shr  eax, 16
-    movzx edx, al                    ; B register (not RK)
-    mov  eax, [ebp + edx*8]
-    mov  ecx, [ebp + edx*8 + 4]
-    cmp  ecx, TAG_STR
-    je   .string
-    ; Table array_len support can share this opcode once TAG_TAB is
-    ; implemented; for now non-strings trap via the existing type path.
-    jmp  err_type_num
-.string:
-    mov  ebx, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
-    mov  eax, [ebx + eax*8 + 4]       ; StringEntry.len, source constant value is string-table index.
-    shl  eax, 16                      ; return PICO-8 NUM (16.16 fixed point)
-    mov  ecx, [dest_tmp]
-    mov  [ebp + ecx*8], eax
-    mov  dword [ebp + ecx*8 + 4], TAG_NUM
-    jmp  dispatch_next
+    movzx ebx, al                    ; B
+    mov  edx, [ebp + ebx*8 + 4]
+    mov  ecx, [ebp + ebx*8]
+    cmp  edx, TAG_STR
+    je   .str
+    cmp  edx, TAG_TAB
+    jne  err_type_tab
+    push ecx
+    call _p386_table_len
+    add  esp, 4
+    shl  eax, 16
+    mov  ecx, TAG_NUM
+    jmp  store_value_eax_ecx
+.str:
+    test ecx, ecx
+    jz   .nilstr
+    mov  eax, [ecx + 0]
+    shl  eax, 16
+    mov  ecx, TAG_NUM
+    jmp  store_value_eax_ecx
+.nilstr:
+    xor  eax, eax
+    mov  ecx, TAG_NUM
+    jmp  store_value_eax_ecx
 
 op_peek:
     movzx edx, ah                    ; A
@@ -732,6 +967,9 @@ err_rk_pop2:
 err_rk_pop1:
     add  esp, 4
     jmp  done
+err_rk_pop24:
+    add  esp, 24
+    jmp  done
 err_type_num_pop:
     add  esp, 4
 err_type_num:
@@ -741,6 +979,23 @@ err_type_num:
 err_div0:
     mov  dword [edi + VM_STATUS], ERR_DIV0
     mov  dword [edi + VM_ERROR_MSG], msg_div0
+    jmp  done
+err_type_tab_pop4:
+    add  esp, 4
+err_type_tab:
+    mov  dword [edi + VM_STATUS], ERR_TYPE
+    mov  dword [edi + VM_ERROR_MSG], msg_type_tab
+    jmp  done
+err_type_str:
+    mov  dword [edi + VM_STATUS], ERR_TYPE
+    mov  dword [edi + VM_ERROR_MSG], msg_type_str
+    jmp  done
+err_bounds_pop4:
+    add  esp, 4
+    jmp  err_bounds
+err_oom:
+    mov  dword [edi + VM_STATUS], ERR_BOUNDS
+    mov  dword [edi + VM_ERROR_MSG], msg_oom
     jmp  done
 bad_opcode:
     mov  dword [edi + VM_STATUS], ERR_OPCODE
