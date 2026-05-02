@@ -1,6 +1,7 @@
 #include <string.h>
 #include "test.h"
 #include "p386_vm.h"
+#include "p386_builtins.h"
 #include "mem.h"
 
 P8Ram p8_ram;
@@ -427,13 +428,41 @@ TEST(vm_globals_round_trip) {
     fx_init(&f);
     fx_const(&f, P386_FP_INT(42), P386_TAG_NUM);
     fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
-    fx_emit(&f, P386_ABC(P386_OP_SETGLOBAL, 0, 7, 0));
+    fx_emit(&f, P386_ABC(P386_OP_SETGLOBAL, 0, 99, 0));
     fx_emit(&f, P386_ABC(P386_OP_LOADN, 0, 1, 0));
-    fx_emit(&f, P386_ABC(P386_OP_GETGLOBAL, 3, 7, 0));
+    fx_emit(&f, P386_ABC(P386_OP_GETGLOBAL, 3, 99, 0));
     fx_emit(&f, P386_ABC(P386_OP_RETURN, 3, 2, 0));
     ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
     ASSERT_NIL(vm, 0);
     ASSERT_NUM(vm, 3, P386_FP_INT(42));
+    PASS();
+}
+
+TEST(vm_init_registers_cfunc_builtins) {
+    P386VMState vm;
+    p386_vm_init(&vm);
+    ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_PRINT].tag);
+    ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_print,
+              vm.globals[P386_BUILTIN_PRINT].value);
+    ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_CLS].tag);
+    ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_cls,
+              vm.globals[P386_BUILTIN_CLS].value);
+    ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_PAIRS].tag);
+    ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_pairs,
+              vm.globals[P386_BUILTIN_PAIRS].value);
+    ASSERT_EQ(P386_TAG_NIL, vm.globals[P386_BUILTIN_COUNT].tag);
+    PASS();
+}
+
+TEST(vm_load_preserves_registered_cfunc_builtins) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_emit(&f, P386_ABC(P386_OP_GETGLOBAL, 0, P386_BUILTIN_PRINT, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_EQ(P386_TAG_CFUNC, vm.value_stack[0].tag);
+    ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_print, vm.value_stack[0].value);
     PASS();
 }
 

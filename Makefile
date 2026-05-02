@@ -29,6 +29,7 @@ OUT		= dos/MAIN.EXE
 LIB_OBJS = 	src/pico386.obj				\
 			src/p386_loader.obj			\
 			src/p386_obj.obj			\
+			src/p386_builtins.obj		\
 			src/p386_dispatch.obj		\
 			src/print.obj				\
 			src/vga.obj					\
@@ -131,8 +132,8 @@ pico: wstub.exe dos $(OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
 test: wstub.exe dos $(TEST_OBJ) $(LIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
 	$(LD) system dos4g file $(TEST_OBJ) $(foreach obj,$(LIB_OBJS),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(TEST_OUT)
 
-vm-test: wstub.exe dos $(VM_TEST_OBJ) src/p386_loader.obj src/p386_obj.obj src/p386_dispatch.obj src/serial.obj src/print.obj
-	$(LD) system dos4g file $(VM_TEST_OBJ) file src/p386_loader.obj file src/p386_obj.obj file src/p386_dispatch.obj file src/serial.obj file src/print.obj name $(VM_TEST_OUT)
+vm-test: wstub.exe dos $(VM_TEST_OBJ) src/p386_loader.obj src/p386_obj.obj src/p386_builtins.obj src/p386_dispatch.obj src/serial.obj src/print.obj
+	$(LD) system dos4g file $(VM_TEST_OBJ) file src/p386_loader.obj file src/p386_obj.obj file src/p386_builtins.obj file src/p386_dispatch.obj file src/serial.obj file src/print.obj name $(VM_TEST_OUT)
 
 # VGA test binary — needs VGA + serial, minimal deps
 vga-test: wstub.exe dos $(VGA_TEST_OBJ) src/vga.obj src/serial.obj src/print.obj

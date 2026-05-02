@@ -25,6 +25,8 @@ void main() {
     RUN_TEST(vm_rk_const_out_of_bounds_traps);
     RUN_TEST(vm_move_booleans_and_loadn);
     RUN_TEST(vm_globals_round_trip);
+    RUN_TEST(vm_init_registers_cfunc_builtins);
+    RUN_TEST(vm_load_preserves_registered_cfunc_builtins);
     RUN_TEST(vm_branch_false_skips_poison);
     RUN_TEST(vm_not_and_comparisons);
     RUN_TEST(vm_type_trap_add_bool);

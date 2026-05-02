@@ -1,5 +1,6 @@
 #include <string.h>
 #include "p386_vm.h"
+#include "p386_builtins.h"
 
 static int range_ok(uint32_t off, uint32_t len, uint32_t size) {
     return off <= size && len <= size - off;
@@ -96,6 +97,7 @@ void p386_vm_init(P386VMState *vm) {
     vm->base = vm->value_stack;
     vm->top = vm->value_stack;
     vm->value_stack_end = vm->value_stack + P386_VALUE_STACK_SLOTS;
+    p386_register_builtins(vm);
 }
 
 int p386_vm_load(P386VMState *vm, const uint8_t *buf, uint32_t size) {
