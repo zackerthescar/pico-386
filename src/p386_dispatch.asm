@@ -165,11 +165,17 @@ load_rk:
     mov  ecx, [edi + VM_CURRENT_PROTO]
     movzx eax, byte [ecx + PE_N_CONSTS]
     cmp  ebx, eax
-    jae  err_bounds
+    jae  .bounds
     mov  eax, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
     add  eax, [ecx + PE_CONSTS_OFF]
     mov  ecx, [eax + ebx*8 + 4]
     mov  eax, [eax + ebx*8]
+    clc
+    ret
+.bounds:
+    mov  dword [edi + VM_STATUS], ERR_BOUNDS
+    mov  dword [edi + VM_ERROR_MSG], msg_bounds
+    stc
     ret
 
 store_bool_al:
@@ -261,11 +267,13 @@ op_setglobal:
     mov  dl, al                    ; B RK
     mov  dh, ah                    ; C RK
     call load_rk
+    jc   done
     cmp  ecx, TAG_NUM
     jne  err_type_num
     push eax                       ; left value
     mov  dl, dh
     call load_rk
+    jc   err_rk_pop1
     cmp  ecx, TAG_NUM
     jne  err_type_num_pop
     mov  ebx, eax                  ; right
@@ -408,6 +416,7 @@ op_neg:
     shr  eax, 16
     mov  dl, al
     call load_rk
+    jc   done
     cmp  ecx, TAG_NUM
     jne  err_type_num
     neg  eax
@@ -422,6 +431,7 @@ op_bnot:
     shr  eax, 16
     mov  dl, al
     call load_rk
+    jc   done
     cmp  ecx, TAG_NUM
     jne  err_type_num
     sar  eax, 16
@@ -441,11 +451,13 @@ op_bnot:
     mov  dl, al
     mov  dh, ah
     call load_rk
+    jc   done
     cmp  ecx, TAG_NUM
     jne  err_type_num
     push eax
     mov  dl, dh
     call load_rk
+    jc   err_rk_pop1
     cmp  ecx, TAG_NUM
     jne  err_type_num_pop
     mov  ebx, eax
@@ -462,10 +474,12 @@ op_eq:
     mov  dl, al
     mov  dh, ah
     call load_rk
+    jc   done
     push eax
     push ecx
     mov  dl, dh
     call load_rk
+    jc   err_rk_pop2
     pop  ebx                       ; left tag
     pop  edx                       ; left value
     cmp  ebx, ecx
@@ -484,10 +498,12 @@ op_ne:
     mov  dl, al
     mov  dh, ah
     call load_rk
+    jc   done
     push eax
     push ecx
     mov  dl, dh
     call load_rk
+    jc   err_rk_pop2
     pop  ebx
     pop  edx
     cmp  ebx, ecx
@@ -636,6 +652,12 @@ op_unimpl:
 err_bounds:
     mov  dword [edi + VM_STATUS], ERR_BOUNDS
     mov  dword [edi + VM_ERROR_MSG], msg_bounds
+    jmp  done
+err_rk_pop2:
+    add  esp, 8
+    jmp  done
+err_rk_pop1:
+    add  esp, 4
     jmp  done
 err_type_num_pop:
     add  esp, 4
