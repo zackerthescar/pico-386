@@ -34,5 +34,12 @@ void main() {
     RUN_TEST(vm_bitwise_and_or_xor_not);
     RUN_TEST(vm_shifts_and_rotates);
     RUN_TEST(vm_idiv_div_zero_traps);
+    RUN_TEST(vm_jmp_sbx_zero_is_noop);
+    RUN_TEST(vm_jmpt_sbx_negative_edge_takes_backedge);
+    RUN_TEST(vm_jmpf_sbx_positive_edge_skips_unimplemented);
+    RUN_TEST(vm_forloop_positive_step_accumulates_sum);
+    RUN_TEST(vm_forloop_negative_step_accumulates_sum);
+    RUN_TEST(vm_forprep_requires_numeric_regs);
+    RUN_TEST(vm_tfor_opcodes_are_explicitly_unimplemented);
     TEST_REPORT();
 }

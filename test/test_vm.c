@@ -557,3 +557,126 @@ TEST(vm_idiv_div_zero_traps) {
     ASSERT_EQ(P386_VM_ERR_DIV0, run_fixture(&f, &vm));
     PASS();
 }
+
+TEST(vm_jmp_sbx_zero_is_noop) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(7), P386_TAG_NUM);
+    fx_emit(&f, P386_ASBX(P386_OP_JMP, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(7));
+    PASS();
+}
+
+TEST(vm_jmpt_sbx_negative_edge_takes_backedge) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, 0, P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(3), P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_ADD, 0, P386_RK_REG(0), P386_RK_CONST(1)));
+    fx_emit(&f, P386_ABC(P386_OP_LT, 1, P386_RK_REG(0), P386_RK_CONST(2)));
+    fx_emit(&f, P386_ASBX(P386_OP_JMPT, 1, -3));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(3));
+    PASS();
+}
+
+TEST(vm_jmpf_sbx_positive_edge_skips_unimplemented) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(11), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_LOADN, 0, 1, 0));
+    fx_emit(&f, P386_ASBX(P386_OP_JMPF, 0, 2));
+    fx_emit(&f, P386_ABC(P386_OP_TFORCALL, 0, 0, 0));
+    fx_emit(&f, P386_ASBX(P386_OP_JMP, 0, 1));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 1, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 1, P386_FP_INT(11));
+    PASS();
+}
+
+TEST(vm_forloop_positive_step_accumulates_sum) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(3), P386_TAG_NUM);
+    fx_const(&f, 0, P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 1));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 2, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 4, 2));
+    fx_emit(&f, P386_ASBX(P386_OP_FORPREP, 0, 1));
+    fx_emit(&f, P386_ABC(P386_OP_ADD, 4, P386_RK_REG(4), P386_RK_REG(3)));
+    fx_emit(&f, P386_ASBX(P386_OP_FORLOOP, 0, -2));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 4, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(4));
+    ASSERT_NUM(vm, 3, P386_FP_INT(3));
+    ASSERT_NUM(vm, 4, P386_FP_INT(6));
+    PASS();
+}
+
+TEST(vm_forloop_negative_step_accumulates_sum) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(3), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM);
+    fx_const(&f, -P386_FP_INT(1), P386_TAG_NUM);
+    fx_const(&f, 0, P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 1));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 2, 2));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 4, 3));
+    fx_emit(&f, P386_ASBX(P386_OP_FORPREP, 0, 1));
+    fx_emit(&f, P386_ABC(P386_OP_ADD, 4, P386_RK_REG(4), P386_RK_REG(3)));
+    fx_emit(&f, P386_ASBX(P386_OP_FORLOOP, 0, -2));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 4, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, 0);
+    ASSERT_NUM(vm, 3, P386_FP_INT(1));
+    ASSERT_NUM(vm, 4, P386_FP_INT(6));
+    PASS();
+}
+
+TEST(vm_forprep_requires_numeric_regs) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(1), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_LOADT, 0, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 2, 0));
+    fx_emit(&f, P386_ASBX(P386_OP_FORPREP, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_TYPE, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("expected number", vm.error_msg);
+    PASS();
+}
+
+TEST(vm_tfor_opcodes_are_explicitly_unimplemented) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_emit(&f, P386_ABC(P386_OP_TFORCALL, 0, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("opcode not implemented yet", vm.error_msg);
+
+    fx_init(&f);
+    fx_emit(&f, P386_ASBX(P386_OP_TFORLOOP, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("opcode not implemented yet", vm.error_msg);
+    PASS();
+}

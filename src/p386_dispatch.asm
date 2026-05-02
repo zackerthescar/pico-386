@@ -107,6 +107,14 @@ dispatch_table:
     dd op_jmpf
 %elif i = 0x42
     dd op_jmpt
+%elif i = 0x45
+    dd op_forprep
+%elif i = 0x46
+    dd op_forloop
+%elif i = 0x47
+    dd op_unimpl
+%elif i = 0x48
+    dd op_unimpl
 %elif i = 0x53
     dd op_return
 %else
@@ -554,6 +562,53 @@ op_jmpt:
     test eax, eax
     jz   dispatch_next
 .take:
+    lea  esi, [esi + ebx*4]
+    jmp  dispatch_next
+
+; --- loops --------------------------------------------------------------
+op_forprep:
+    movzx ecx, ah                  ; A
+    mov  ebx, eax
+    shr  ebx, 16
+    movsx ebx, bx                  ; sBx (from end of instruction)
+    cmp  dword [ebp + ecx*8 + 4], TAG_NUM
+    jne  err_type_num
+    cmp  dword [ebp + ecx*8 + 12], TAG_NUM
+    jne  err_type_num
+    cmp  dword [ebp + ecx*8 + 20], TAG_NUM
+    jne  err_type_num
+    mov  eax, [ebp + ecx*8]
+    sub  eax, [ebp + ecx*8 + 16]   ; idx -= step
+    mov  [ebp + ecx*8], eax
+    lea  esi, [esi + ebx*4]
+    jmp  dispatch_next
+
+op_forloop:
+    movzx ecx, ah                  ; A
+    mov  ebx, eax
+    shr  ebx, 16
+    movsx ebx, bx                  ; sBx (normally back to loop body)
+    cmp  dword [ebp + ecx*8 + 4], TAG_NUM
+    jne  err_type_num
+    cmp  dword [ebp + ecx*8 + 12], TAG_NUM
+    jne  err_type_num
+    cmp  dword [ebp + ecx*8 + 20], TAG_NUM
+    jne  err_type_num
+    mov  eax, [ebp + ecx*8 + 16]   ; step
+    mov  edx, [ebp + ecx*8]        ; idx
+    add  edx, eax                  ; idx += step
+    mov  [ebp + ecx*8], edx
+    test eax, eax
+    js   .negative_step
+    cmp  edx, [ebp + ecx*8 + 8]    ; positive step: idx <= limit
+    jle  .take
+    jmp  dispatch_next
+.negative_step:
+    cmp  edx, [ebp + ecx*8 + 8]    ; negative step: idx >= limit
+    jl   dispatch_next
+.take:
+    mov  [ebp + ecx*8 + 24], edx   ; external loop variable R[A+3] = idx
+    mov  dword [ebp + ecx*8 + 28], TAG_NUM
     lea  esi, [esi + ebx*4]
     jmp  dispatch_next
 
