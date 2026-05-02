@@ -14,6 +14,7 @@ msg_type_iter  db 'expected table iterator state',0
 msg_type_func  db 'expected function',0
 msg_oom        db 'out of memory',0
 msg_for_step   db 'for loop step must be non-zero',0
+msg_vararg     db 'variable call/return not implemented',0
 
 extern _p386_table_new
 extern _p386_table_get
@@ -22,6 +23,7 @@ extern _p386_table_len
 extern _p386_table_next
 extern _p386_string_intern
 extern _p386_value_concat
+extern _p386_closure_new
 
 align 4
 dispatch_table:
@@ -121,6 +123,8 @@ dispatch_table:
     dd op_tforcall
 %elif i = 0x48
     dd op_tforloop
+%elif i = 0x50
+    dd op_closure
 %elif i = 0x51
     dd op_call
 %elif i = 0x53
@@ -999,10 +1003,32 @@ op_tforloop:
     lea  esi, [esi + ebx*4]
     jmp  dispatch_next
 
+op_closure:
+    movzx ecx, ah                  ; A
+    shr  eax, 16                   ; Bx = proto index
+    movzx edx, ax
+    mov  ebx, [edi + VM_PROGRAM + LP_PROTOS]
+    mov  eax, edx
+    imul eax, 24
+    add  eax, ebx
+    push ecx
+    push eax                       ; proto pointer
+    push edx                       ; proto index
+    call _p386_closure_new
+    add  esp, 8
+    pop  ecx
+    test eax, eax
+    jz   err_oom
+    mov  [ebp + ecx*8], eax
+    mov  dword [ebp + ecx*8 + 4], TAG_FUNC
+    jmp  dispatch_next
+
 op_call:
     movzx ecx, ah                  ; A: function register
     mov  edx, eax
     shr  edx, 16
+    cmp  dword [ebp + ecx*8 + 4], TAG_FUNC
+    je   .lua_func
     cmp  dword [ebp + ecx*8 + 4], TAG_CFUNC
     jne  err_type_func
     mov  ebx, [ebp + ecx*8]        ; raw C function pointer
@@ -1091,21 +1117,169 @@ op_call:
     mov  dword [edi + VM_ERROR_MSG], msg_type_func
     jmp  done
 
+.lua_func:
+    mov  ebx, [ebp + ecx*8]        ; P386Closure*
+    test ebx, ebx
+    jz   err_type_func
+
+    movzx eax, dl                  ; B = nargs + 1 (0 => variable, unsupported => 0)
+    test eax, eax
+    jnz  .lua_fixed_args
+    jmp  err_vararg
+.lua_fixed_args:
+    dec  eax                       ; nargs
+.lua_args_ready:
+    mov  [scratch_a + 4], eax      ; nargs
+    movzx edx, dh                  ; C = want_rets + 1 (0 => all)
+    test edx, edx
+    jz   .lua_want_ready
+    dec  edx
+.lua_want_ready:
+    mov  [scratch_a + 8], edx      ; want_rets (0 => all)
+    mov  [scratch_a], ecx          ; caller A
+
+    cmp  dword [edi + VM_CALL_DEPTH], CALL_STACK_DEPTH
+    jae  err_bounds
+    mov  eax, [edi + VM_CALL_DEPTH]
+    shl  eax, 4
+    lea  eax, [edi + VM_CALL_STACK + eax]
+    mov  [eax + FRAME_RETURN_IP], esi
+    mov  [eax + FRAME_RETURN_BASE], ebp
+    mov  edx, [edi + VM_CURRENT_PROTO]
+    mov  [eax + FRAME_RETURN_PROTO], edx
+    mov  edx, [scratch_a]
+    mov  [eax + FRAME_RETURN_REG], dl
+    mov  edx, [scratch_a + 8]
+    mov  [eax + FRAME_WANT_RETS], dl
+    inc  dword [edi + VM_CALL_DEPTH]
+
+    mov  ecx, [scratch_a]          ; caller A
+    mov  eax, [ebp + ecx*8]        ; closure
+    mov  ebx, [eax + 4]            ; closure->proto
+    lea  eax, [ebp + ecx*8 + 8]    ; first arg in caller
+    mov  [scratch_a + 12], eax
+
+    mov  eax, [edi + VM_CURRENT_PROTO]
+    movzx eax, byte [eax + PE_N_REGS]
+    lea  ebp, [ebp + eax*8]        ; callee base = caller base + caller n_regs
+    mov  [edi + VM_BASE], ebp
+    mov  [edi + VM_CURRENT_PROTO], ebx
+    movzx edx, byte [ebx + PE_N_REGS]
+    mov  [dest_tmp], edx
+    lea  eax, [ebp + edx*8]
+    cmp  eax, [edi + VM_VALUE_STACK_END]
+    ja   err_bounds
+    mov  [edi + VM_TOP], eax
+
+    ; clear all callee registers to nil
+    xor  ecx, ecx
+.lua_clear_loop:
+    cmp  ecx, [dest_tmp]
+    jae  .lua_copy_args
+    mov  dword [ebp + ecx*8], 0
+    mov  dword [ebp + ecx*8 + 4], TAG_NIL
+    inc  ecx
+    jmp  .lua_clear_loop
+
+.lua_copy_args:
+    mov  edx, [scratch_a + 4]      ; copy min(nargs, n_params)
+    movzx eax, byte [ebx + PE_N_PARAMS]
+    cmp  edx, eax
+    jbe  .lua_copy_count_ready
+    mov  edx, eax
+.lua_copy_count_ready:
+    xor  ecx, ecx
+    mov  eax, [scratch_a + 12]
+.lua_arg_loop:
+    cmp  ecx, edx
+    jae  .lua_enter
+    mov  esi, [eax + ecx*8]
+    mov  [ebp + ecx*8], esi
+    mov  esi, [eax + ecx*8 + 4]
+    mov  [ebp + ecx*8 + 4], esi
+    inc  ecx
+    jmp  .lua_arg_loop
+
+.lua_enter:
+    mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  esi, [ebx + PE_BYTECODE_OFF]
+    jmp  dispatch_next
+
 op_return:
     movzx ecx, ah                  ; A
     shr  eax, 16
-    movzx edx, al                  ; B = nrets + 1, 0 = all (ignored for now)
+    movzx edx, al                  ; B = nrets + 1, 0 = all
     test edx, edx
-    jz   .all
+    jz   err_vararg
     dec  edx
+.count_ready:
+    cmp  dword [edi + VM_CALL_DEPTH], 0
+    jne  .return_to_caller
     lea  eax, [ebp + ecx*8]
     lea  eax, [eax + edx*8]
     mov  [edi + VM_TOP], eax
     jmp  done_halted
-.all:
-    lea  eax, [ebp + ecx*8]
-    mov  [edi + VM_TOP], eax
-    jmp  done_halted
+
+.return_to_caller:
+    mov  [scratch_a], ecx          ; return A
+    mov  [scratch_a + 4], edx      ; actual returns
+    mov  [scratch_a + 8], ebp      ; callee base
+    dec  dword [edi + VM_CALL_DEPTH]
+    mov  eax, [edi + VM_CALL_DEPTH]
+    shl  eax, 4
+    lea  eax, [edi + VM_CALL_STACK + eax]
+    mov  esi, [eax + FRAME_RETURN_IP]
+    mov  ebx, [eax + FRAME_RETURN_PROTO]
+    mov  [edi + VM_CURRENT_PROTO], ebx
+    mov  ebp, [eax + FRAME_RETURN_BASE]
+    mov  [edi + VM_BASE], ebp
+    movzx ecx, byte [eax + FRAME_RETURN_REG]
+    movzx edx, byte [eax + FRAME_WANT_RETS]
+    mov  ebx, [scratch_a + 4]      ; actual return count
+    mov  eax, edx                  ; wanted fixed count, 0 => all actual
+    test eax, eax
+    jnz  .lua_ret_copy_fixed
+    mov  eax, ebx
+.lua_ret_copy_fixed:
+    push eax                       ; ncopy/result slots requested
+    xor  edx, edx
+.lua_ret_copy_loop:
+    cmp  edx, eax
+    jae  .lua_ret_copy_done
+    cmp  edx, ebx
+    jae  .lua_ret_pad_nil
+    push eax
+    mov  eax, [scratch_a]
+    add  eax, edx
+    lea  eax, [eax*8]
+    add  eax, [scratch_a + 8]      ; source callee R[A+i]
+    mov  [dest_tmp], eax
+    mov  ebx, [eax]
+    mov  eax, ecx
+    add  eax, edx
+    lea  eax, [ebp + eax*8]        ; destination caller R[return_reg+i]
+    mov  [eax], ebx
+    mov  ebx, [dest_tmp]
+    mov  ebx, [ebx + 4]
+    mov  [eax + 4], ebx
+    pop  eax
+    jmp  .lua_ret_next_slot
+.lua_ret_pad_nil:
+    push eax
+    mov  eax, ecx
+    add  eax, edx
+    mov  dword [ebp + eax*8], 0
+    mov  dword [ebp + eax*8 + 4], TAG_NIL
+    pop  eax
+.lua_ret_next_slot:
+    inc  edx
+    jmp  .lua_ret_copy_loop
+.lua_ret_copy_done:
+    pop  eax
+    add  eax, ecx
+    lea  edx, [ebp + eax*8]
+    mov  [edi + VM_TOP], edx
+    jmp  dispatch_next
 
 op_unimpl:
     mov  dword [edi + VM_STATUS], ERR_UNIMPL
@@ -1163,6 +1337,10 @@ err_oom:
 err_for_step:
     mov  dword [edi + VM_STATUS], ERR_TYPE
     mov  dword [edi + VM_ERROR_MSG], msg_for_step
+    jmp  done
+err_vararg:
+    mov  dword [edi + VM_STATUS], ERR_UNIMPL
+    mov  dword [edi + VM_ERROR_MSG], msg_vararg
     jmp  done
 bad_opcode:
     mov  dword [edi + VM_STATUS], ERR_OPCODE

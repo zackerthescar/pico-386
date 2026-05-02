@@ -44,6 +44,11 @@ typedef struct P386Table {
     uint32_t        array_len;  /* contiguous int keys 1..N (`#t`) */
 } P386Table;
 
+typedef struct P386Closure {
+    uint32_t proto_index;
+    const P386ProtoEntry *proto;
+} P386Closure;
+
 /* String construction / interning. */
 P386String *p386_string_new(const char *data, uint32_t len);
 P386String *p386_string_intern(const char *data, uint32_t len);
@@ -57,6 +62,9 @@ P386String *p386_num_to_string(int32_t fp);
 
 /* Table operations. NEWTABLE(B,C): hints currently ignored. */
 P386Table *p386_table_new(uint32_t array_hint, uint32_t hash_hint);
+
+/* Closure construction. Upvalues are added later; v1 closure is a proto handle. */
+P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto);
 
 /* GET: writes nil if absent. Always succeeds. */
 void p386_table_get(const P386Table *t, const P386Value *key, P386Value *out);

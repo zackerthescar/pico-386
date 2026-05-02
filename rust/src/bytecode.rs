@@ -52,6 +52,7 @@ pub const P386_OP_CONCAT: u8 = 0x3b;
 pub const P386_OP_JMP: u8 = 0x40;
 pub const P386_OP_JMPF: u8 = 0x41;
 pub const P386_OP_JMPT: u8 = 0x42;
+pub const P386_OP_CLOSURE: u8 = 0x50;
 pub const P386_OP_CALL: u8 = 0x51;
 pub const P386_OP_RETURN: u8 = 0x53;
 
@@ -89,12 +90,15 @@ pub struct FuncProto {
     pub code: Vec<u8>,
     pub constants: Vec<Constant>,
     pub prototypes: Vec<FuncProto>,
+    pub instructions: Vec<u32>,
+    pub n_regs: u8,
+    pub n_params: u8,
 }
 
 impl FuncProto {
-    pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, n_regs: u8) -> Self {
-        let code = emit_container(&instructions, &constants, n_regs);
-        Self { code, constants, prototypes }
+    pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, n_regs: u8, n_params: u8) -> Self {
+        let code = emit_program(&instructions, &constants, &prototypes, n_regs, n_params);
+        Self { code, constants, prototypes, instructions, n_regs, n_params }
     }
 }
 
@@ -127,30 +131,37 @@ fn pad4(out: &mut Vec<u8>) {
     while out.len() & 3 != 0 { out.push(0); }
 }
 
-fn collect_strings(constants: &[Constant]) -> Vec<Vec<u8>> {
-    let mut strings = Vec::new();
-    for c in constants {
-        if let Constant::Str(s) = c {
-            if !strings.iter().any(|x: &Vec<u8>| x.as_slice() == s.as_slice()) {
-                strings.push(s.clone());
-            }
-        }
-    }
-    strings
-}
-
 fn string_index(strings: &[Vec<u8>], needle: &[u8]) -> u32 {
     strings.iter().position(|s| s.as_slice() == needle).unwrap_or(0) as u32
 }
 
-pub fn emit_container(instructions: &[u32], constants: &[Constant], n_regs: u8) -> Vec<u8> {
-    let strings = collect_strings(constants);
-    let n_protos = 1u32;
+fn collect_all_strings(constants: &[Constant], protos: &[FuncProto], out: &mut Vec<Vec<u8>>) {
+    for c in constants {
+        if let Constant::Str(s) = c {
+            if !out.iter().any(|x| x.as_slice() == s.as_slice()) { out.push(s.clone()); }
+        }
+    }
+    for p in protos { collect_all_strings(&p.constants, &p.prototypes, out); }
+}
+
+fn flatten_protos<'a>(root: (&'a [u32], &'a [Constant], u8, u8), protos: &'a [FuncProto], out: &mut Vec<(&'a [u32], &'a [Constant], u8, u8)>) {
+    out.push(root);
+    for p in protos {
+        flatten_protos((&p.instructions, &p.constants, p.n_regs, p.n_params), &p.prototypes, out);
+    }
+}
+
+pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[FuncProto], n_regs: u8, n_params: u8) -> Vec<u8> {
+    let mut strings = Vec::new();
+    collect_all_strings(constants, prototypes, &mut strings);
+    let mut protos = Vec::new();
+    flatten_protos((instructions, constants, n_regs, n_params), prototypes, &mut protos);
+    let n_protos = protos.len() as u32;
     let n_strings = strings.len() as u32;
 
     let header_size = 32usize;
     let proto_table_offset = header_size;
-    let proto_table_size = 24usize;
+    let proto_table_size = protos.len() * 24;
     let string_table_offset = proto_table_offset + proto_table_size;
     let string_table_size = strings.len() * 8;
     let bytecode_section_offset = align4(string_table_offset + string_table_size);
@@ -167,23 +178,10 @@ pub fn emit_container(instructions: &[u32], constants: &[Constant], n_regs: u8) 
     push_u32(&mut out, string_table_offset as u32);
     push_u32(&mut out, bytecode_section_offset as u32);
 
-    let code_off = 0usize;
-    let code_len = instructions.len() * 4;
-    let consts_off = align4(code_off + code_len);
-    let n_consts = constants.len().min(255);
-    let consts_len = n_consts * 8;
-    let upvals_off = align4(consts_off + consts_len);
-
-    push_u32(&mut out, code_off as u32);
-    push_u32(&mut out, code_len as u32);
-    push_u32(&mut out, consts_off as u32);
-    push_u32(&mut out, upvals_off as u32);
-    push_u8(&mut out, n_consts as u8);
-    push_u8(&mut out, 0); // n_params
-    push_u8(&mut out, n_regs.max(1));
-    push_u8(&mut out, 0); // n_upvalues
-    push_u8(&mut out, P386_PROTO_FLAG_MAIN);
-    out.extend_from_slice(&[0, 0, 0]);
+    let proto_patch_start = out.len();
+    for _ in 0..protos.len() {
+        for _ in 0..24 { out.push(0); }
+    }
 
     let mut string_entry_patches = Vec::new();
     for s in &strings {
@@ -194,21 +192,33 @@ pub fn emit_container(instructions: &[u32], constants: &[Constant], n_regs: u8) 
 
     while out.len() < bytecode_section_offset { out.push(0); }
 
-    for &ins in instructions {
-        push_u32(&mut out, ins);
-    }
-    pad4(&mut out);
-
-    for c in constants.iter().take(255) {
-        match c {
-            Constant::Nil => { push_i32(&mut out, 0); push_u32(&mut out, P386_TAG_NIL); }
-            Constant::Bool(v) => { push_i32(&mut out, if *v { 1 } else { 0 }); push_u32(&mut out, P386_TAG_BOOL); }
-            Constant::Num(v) => { push_i32(&mut out, *v); push_u32(&mut out, P386_TAG_NUM); }
-            Constant::Str(s) => { push_i32(&mut out, string_index(&strings, s) as i32); push_u32(&mut out, P386_TAG_STR); }
+    for (pi, (insns, consts, regs, params)) in protos.iter().enumerate() {
+        let code_off = out.len() - bytecode_section_offset;
+        for &ins in *insns { push_u32(&mut out, ins); }
+        pad4(&mut out);
+        let code_len = insns.len() * 4;
+        let consts_off = out.len() - bytecode_section_offset;
+        for c in consts.iter().take(255) {
+            match c {
+                Constant::Nil => { push_i32(&mut out, 0); push_u32(&mut out, P386_TAG_NIL); }
+                Constant::Bool(v) => { push_i32(&mut out, if *v { 1 } else { 0 }); push_u32(&mut out, P386_TAG_BOOL); }
+                Constant::Num(v) => { push_i32(&mut out, *v); push_u32(&mut out, P386_TAG_NUM); }
+                Constant::Str(s) => { push_i32(&mut out, string_index(&strings, s) as i32); push_u32(&mut out, P386_TAG_STR); }
+            }
         }
+        pad4(&mut out);
+        let upvals_off = out.len() - bytecode_section_offset;
+        let patch = proto_patch_start + pi * 24;
+        patch_u32(&mut out, patch, code_off as u32);
+        patch_u32(&mut out, patch + 4, code_len as u32);
+        patch_u32(&mut out, patch + 8, consts_off as u32);
+        patch_u32(&mut out, patch + 12, upvals_off as u32);
+        out[patch + 16] = consts.len().min(255) as u8;
+        out[patch + 17] = *params;
+        out[patch + 18] = (*regs).max(1);
+        out[patch + 19] = 0;
+        out[patch + 20] = if pi == 0 { P386_PROTO_FLAG_MAIN } else { 0 };
     }
-    pad4(&mut out);
-    pad4(&mut out); // no upvalues yet
 
     for (i, s) in strings.iter().enumerate() {
         let data_off = out.len() as u32;

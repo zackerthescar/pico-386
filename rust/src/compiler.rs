@@ -33,6 +33,7 @@ impl Compiler {
 
 struct CodeGen<'a> {
     compiler: &'a Compiler,
+    n_params: u8,
     code: Vec<u32>,
     constants: Vec<Constant>,
     prototypes: Vec<FuncProto>,
@@ -49,6 +50,7 @@ impl<'a> CodeGen<'a> {
     fn new(compiler: &'a Compiler) -> Self {
         Self {
             compiler,
+            n_params: 0,
             code: Vec::new(),
             constants: Vec::new(),
             prototypes: Vec::new(),
@@ -63,7 +65,7 @@ impl<'a> CodeGen<'a> {
     }
 
     fn finish(self) -> Option<FuncProto> {
-        if self.failed { None } else { Some(FuncProto::new(self.code, self.constants, self.prototypes, self.max_reg.saturating_add(1).max(1))) }
+        if self.failed { None } else { Some(FuncProto::new(self.code, self.constants, self.prototypes, self.max_reg.saturating_add(1).max(1), self.n_params)) }
     }
 
     fn emit(&mut self, ins: u32) -> usize {
@@ -256,11 +258,18 @@ impl<'a> CodeGen<'a> {
             Stat::CompoundAssign { target, op, value, .. } => self.compile_compound(target, *op, value),
             Stat::FuncDef { name, params, body, .. } => {
                 self.collect_func_name(name);
-                self.add_function_proto(params, body);
+                let idx = self.add_function_proto(params, body);
+                if let Some(first) = name.parts.first() {
+                    let dst = self.temp();
+                    self.emit(abx(P386_OP_CLOSURE, dst, idx));
+                    let slot = self.global_slot(*first);
+                    self.emit(abc(P386_OP_SETGLOBAL, dst, slot, 0));
+                }
             }
             Stat::LocalFuncDef { name, params, body, .. } => {
-                self.add_name_const(*name);
-                self.add_function_proto(params, body);
+                let dst = self.alloc_local(*name);
+                let idx = self.add_function_proto(params, body);
+                self.emit(abx(P386_OP_CLOSURE, dst, idx));
             }
             Stat::ForNum { var, start, stop, step, body } => self.compile_for_num(*var, start, stop, step.as_deref(), body),
             Stat::ForIn { vars, iters, body } => {
@@ -503,8 +512,8 @@ impl<'a> CodeGen<'a> {
                 }
             }
             Expr::Function { params, body, .. } => {
-                self.add_function_proto(params, body);
-                self.emit(abc(P386_OP_LOADN, dst, 1, 0));
+                let idx = self.add_function_proto(params, body);
+                self.emit(abx(P386_OP_CLOSURE, dst, idx));
             }
             Expr::Varargs => { self.emit(abc(P386_OP_LOADN, dst, 1, 0)); }
         };
@@ -576,8 +585,10 @@ impl<'a> CodeGen<'a> {
         }
     }
 
-    fn add_function_proto(&mut self, params: &[Name], body: &[Stat]) {
+    fn add_function_proto(&mut self, params: &[Name], body: &[Stat]) -> u16 {
+        let idx = self.prototypes.len().saturating_add(1).min(65535) as u16;
         let mut child = CodeGen::new(self.compiler);
+        child.n_params = params.len().min(255) as u8;
         child.push_scope();
         for n in params { child.alloc_local(*n); }
         child.compile_stats(body);
@@ -588,6 +599,7 @@ impl<'a> CodeGen<'a> {
         } else {
             self.failed = true;
         }
+        idx
     }
 
     fn collect_func_name(&mut self, name: &FuncName) {

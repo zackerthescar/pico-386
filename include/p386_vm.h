@@ -32,14 +32,16 @@ typedef struct P386LoadedProgram {
     const uint8_t *bytecode_section;
 } P386LoadedProgram;
 
+#pragma pack(push, 1)
 typedef struct P386CallFrame {
-    const uint32_t *return_ip;
-    P386Value *return_base;
-    void *closure;
+    uint32_t return_ip;
+    uint32_t return_base;
+    uint32_t return_proto;
     uint8_t return_reg;
     uint8_t want_rets;
     uint8_t padding[2];
 } P386CallFrame;
+#pragma pack(pop)
 
 #pragma pack(push, 1)
 typedef struct P386VMState {
@@ -54,6 +56,8 @@ typedef struct P386VMState {
     P386Value globals[256];
     const P386ProtoEntry *current_proto;
     const uint32_t *ip;
+    P386CallFrame call_stack[P386_CALL_STACK_DEPTH];
+    uint32_t call_depth;
 } P386VMState;
 #pragma pack(pop)
 

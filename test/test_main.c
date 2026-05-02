@@ -54,6 +54,7 @@ void main() {
     RUN_TEST(compile_multi_assign_rhs_first_runs_vm);
     RUN_TEST(compile_constant_overflow_returns_null);
     RUN_TEST(compile_branch_local_scope_does_not_leak);
+    RUN_TEST(compile_lua_function_call_runs_vm);
 
     TEST_REPORT();
 }

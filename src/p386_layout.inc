@@ -15,6 +15,15 @@
 %define VM_GLOBALS          32812
 %define VM_CURRENT_PROTO    34860
 %define VM_IP               34864
+%define VM_CALL_STACK       34868
+%define VM_CALL_DEPTH       38964
+%define FRAME_RETURN_IP     0
+%define FRAME_RETURN_BASE   4
+%define FRAME_RETURN_PROTO  8
+%define FRAME_RETURN_REG    12
+%define FRAME_WANT_RETS     13
+%define FRAME_SIZE          16
+%define CALL_STACK_DEPTH    256
 %define PE_BYTECODE_OFF     0
 %define PE_BYTECODE_LEN     4
 %define PE_CONSTS_OFF       8

@@ -307,3 +307,11 @@ int p386_table_next(const P386Table *t, const P386Value *key,
     }
     return 0;
 }
+
+P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto) {
+    P386Closure *c = (P386Closure *)malloc(sizeof(P386Closure));
+    if (!c) return 0;
+    c->proto_index = proto_index;
+    c->proto = proto;
+    return c;
+}

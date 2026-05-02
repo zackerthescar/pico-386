@@ -33,6 +33,14 @@ P386_LAYOUT_STATIC_ASSERT(vm_value_stack_end, offsetof(P386VMState, value_stack_
 P386_LAYOUT_STATIC_ASSERT(vm_globals, offsetof(P386VMState, globals) == 32812);
 P386_LAYOUT_STATIC_ASSERT(vm_current_proto, offsetof(P386VMState, current_proto) == 34860);
 P386_LAYOUT_STATIC_ASSERT(vm_ip, offsetof(P386VMState, ip) == 34864);
+P386_LAYOUT_STATIC_ASSERT(call_frame_size, sizeof(P386CallFrame) == 16);
+P386_LAYOUT_STATIC_ASSERT(call_frame_return_ip, offsetof(P386CallFrame, return_ip) == 0);
+P386_LAYOUT_STATIC_ASSERT(call_frame_return_base, offsetof(P386CallFrame, return_base) == 4);
+P386_LAYOUT_STATIC_ASSERT(call_frame_return_proto, offsetof(P386CallFrame, return_proto) == 8);
+P386_LAYOUT_STATIC_ASSERT(call_frame_return_reg, offsetof(P386CallFrame, return_reg) == 12);
+P386_LAYOUT_STATIC_ASSERT(call_frame_want_rets, offsetof(P386CallFrame, want_rets) == 13);
+P386_LAYOUT_STATIC_ASSERT(vm_call_stack, offsetof(P386VMState, call_stack) == 34868);
+P386_LAYOUT_STATIC_ASSERT(vm_call_depth, offsetof(P386VMState, call_depth) == 38964);
 P386_LAYOUT_STATIC_ASSERT(proto_size, sizeof(P386ProtoEntry) == 24);
 P386_LAYOUT_STATIC_ASSERT(proto_bytecode_off, offsetof(P386ProtoEntry, bytecode_off) == 0);
 P386_LAYOUT_STATIC_ASSERT(proto_bytecode_len, offsetof(P386ProtoEntry, bytecode_len) == 4);

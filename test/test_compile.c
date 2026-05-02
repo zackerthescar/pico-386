@@ -349,3 +349,22 @@ TEST(compile_branch_local_scope_does_not_leak) {
     p8_free_program(prog);
     PASS();
 }
+
+TEST(compile_lua_function_call_runs_vm) {
+    const char *code = "function add1(x) return x+1 end\nreturn add1(41)";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    ASSERT_TRUE(p8_program_num_protos(prog) >= 1);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(42 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
