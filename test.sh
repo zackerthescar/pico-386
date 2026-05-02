@@ -229,6 +229,38 @@ run_unit_tests() {
     fi
 }
 
+run_vm_tests() {
+    echo "=== Building VM tests ==="
+    quiet_make vm-test
+
+    [ -f "$DOS_DIR/VMTEST.EXE" ] || die "Build did not produce VMTEST.EXE"
+
+    echo "=== Booting VMTEST.EXE in QEMU ==="
+    build_floppy "$(printf '@echo off\r\nVMTEST.EXE\r\n')" \
+        "$DOS_DIR/VMTEST.EXE::VMTEST.EXE"
+    run_qemu
+
+    echo ""
+    echo "=== Serial output (COM2) ==="
+    cat "$SERIAL_LOG"
+    echo ""
+
+    echo "=== Results ==="
+    if grep -q "# ALL TESTS PASSED" "$SERIAL_LOG"; then
+        local passed failed
+        passed=$(grep -c "^ok " "$SERIAL_LOG" || true)
+        failed=$(grep -c "^not ok " "$SERIAL_LOG" || true)
+        echo "  $passed passed, $failed failed"
+        echo ""
+        echo "VM TESTS PASSED"
+        return 0
+    fi
+
+    echo "VM TESTS FAILED OR INCONCLUSIVE"
+    grep "^not ok \|^# FAIL" "$SERIAL_LOG" | sed 's/^/    /' || true
+    return 1
+}
+
 # ── Integration test ──
 
 run_integration_test() {
@@ -381,8 +413,9 @@ run_vga_test() {
 
 case "$MODE" in
     unit)        run_unit_tests ;;
+    vm)          run_vm_tests ;;
     integration) run_integration_test ;;
     vga)         run_vga_test "$@" ;;
-    all)         run_unit_tests && run_integration_test && run_vga_test "$@" ;;
-    *)           echo "Usage: $0 [unit|integration|vga|all]" >&2; exit 1 ;;
+    all)         run_unit_tests && run_vm_tests && run_integration_test && run_vga_test "$@" ;;
+    *)           echo "Usage: $0 [unit|vm|integration|vga|all]" >&2; exit 1 ;;
 esac

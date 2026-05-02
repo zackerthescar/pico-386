@@ -1,0 +1,66 @@
+#ifndef P386_VM_H
+#define P386_VM_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include "p386_bytecode.h"
+
+#define P386_VALUE_STACK_SLOTS 4096
+#define P386_CALL_STACK_DEPTH  256
+
+#define P386_VM_OK          0
+#define P386_VM_HALTED      1
+#define P386_VM_ERR_BAD_BC -1
+#define P386_VM_ERR_OPCODE -2
+#define P386_VM_ERR_TYPE   -3
+#define P386_VM_ERR_DIV0   -4
+#define P386_VM_ERR_BOUNDS -5
+#define P386_VM_ERR_UNIMPL -6
+
+#pragma pack(push, 1)
+typedef struct P386Value {
+    int32_t  value;
+    uint32_t tag;
+} P386Value;
+#pragma pack(pop)
+
+typedef struct P386LoadedProgram {
+    const uint8_t *buf;
+    uint32_t buf_size;
+    const P386ProtoEntry *protos;
+    const P386StringEntry *string_entries;
+    const uint8_t *bytecode_section;
+} P386LoadedProgram;
+
+typedef struct P386CallFrame {
+    const uint32_t *return_ip;
+    P386Value *return_base;
+    void *closure;
+    uint8_t return_reg;
+    uint8_t want_rets;
+    uint8_t padding[2];
+} P386CallFrame;
+
+#pragma pack(push, 1)
+typedef struct P386VMState {
+    int32_t status;
+    const char *error_msg;
+    uint32_t last_opcode;
+    P386LoadedProgram program;
+    P386Value value_stack[P386_VALUE_STACK_SLOTS];
+    P386Value *base;
+    P386Value *top;
+    P386Value *value_stack_end;
+    P386Value globals[256];
+    const P386ProtoEntry *current_proto;
+    const uint32_t *ip;
+} P386VMState;
+#pragma pack(pop)
+
+int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out);
+void p386_vm_init(P386VMState *vm);
+int p386_vm_load(P386VMState *vm, const uint8_t *buf, uint32_t size);
+int p386_vm_run(P386VMState *vm);
+const char *p386_vm_status_name(int status);
+
+#endif

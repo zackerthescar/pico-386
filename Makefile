@@ -17,7 +17,7 @@ C_SRC	= 	src/main.c 					\
 			src/pxa_compress_snippets.c	\
 			src/p8_compress.c
 
-ASM_SRC	=	src/serial.asm src/vga.asm
+ASM_SRC	=	src/serial.asm src/vga.asm src/p386_dispatch.asm
 
 # CRT shim bridges Rust ELF references to Watcom C runtime
 CRT_SHIM = src/crt_shim.obj
@@ -27,6 +27,8 @@ OUT		= dos/MAIN.EXE
 
 # Shared objects (everything except main.obj — used by both MAIN.EXE and TEST.EXE)
 LIB_OBJS = 	src/pico386.obj				\
+			src/p386_loader.obj			\
+			src/p386_dispatch.obj		\
 			src/print.obj				\
 			src/vga.obj					\
 			src/cart.obj				\
@@ -38,6 +40,9 @@ LIB_OBJS = 	src/pico386.obj				\
 TEST_SRC	= test/test_main.c
 TEST_OBJ	= test/test_main.obj
 TEST_OUT	= dos/TEST.EXE
+VM_TEST_SRC	= test/test_vm_main.c
+VM_TEST_OBJ	= test/test_vm_main.obj
+VM_TEST_OUT	= dos/VMTEST.EXE
 
 # VGA test
 VGA_TEST_OBJ	= test/test_vga_main.obj
@@ -122,6 +127,9 @@ pico: wstub.exe dos $(OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
 test: wstub.exe dos $(TEST_OBJ) $(LIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
 	$(LD) system dos4g file $(TEST_OBJ) $(foreach obj,$(LIB_OBJS),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(TEST_OUT)
 
+vm-test: wstub.exe dos $(VM_TEST_OBJ) src/p386_loader.obj src/p386_dispatch.obj src/serial.obj src/print.obj
+	$(LD) system dos4g file $(VM_TEST_OBJ) file src/p386_loader.obj file src/p386_dispatch.obj file src/serial.obj file src/print.obj name $(VM_TEST_OUT)
+
 # VGA test binary — needs VGA + serial, minimal deps
 vga-test: wstub.exe dos $(VGA_TEST_OBJ) src/vga.obj src/serial.obj src/print.obj
 	$(LD) system dos4g file $(VGA_TEST_OBJ) file src/vga.obj file src/serial.obj file src/print.obj name $(VGA_TEST_OUT)
@@ -146,8 +154,8 @@ $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c $(ZLIB_DIR)/zconf.h
 	$(CC) -bt=dos -3s -ecc -od -fo=$@ $<
 
 clean:
-	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM) $(TEST_OBJ) $(VGA_TEST_OBJ) dos/*.exe *.err
+	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM) $(TEST_OBJ) $(VM_TEST_OBJ) $(VGA_TEST_OBJ) dos/*.exe *.err
 	cd rust && cargo clean
 
 FORCE:
-.PHONY: all clean pico test vga-test FORCE
+.PHONY: all clean pico test vm-test vga-test FORCE
