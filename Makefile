@@ -2,7 +2,7 @@ CC 		= wcc386
 LD		= wlink
 ASM		= nasm
 CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3s
-AFLAGS 	= -f coff
+AFLAGS 	= -f elf32
 LFLAGS	= -ecc -bt=dos -bc
 
 RUST_TARGET	= i386-dos4gw.json
@@ -133,6 +133,7 @@ $(ZLIB_LIB): $(ZLIB_DIR)/zconf.h
 src/%.obj: src/%.c $(ZLIB_DIR)/zconf.h
 	$(CC) $(CFLAGS) -fo=$@ $<
 
+# asm builds as ELF32 — wlink consumes it alongside OMF C objects.
 src/%.obj: src/%.asm
 	$(ASM) $(AFLAGS) -o $@ $<
 

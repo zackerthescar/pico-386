@@ -1,6 +1,10 @@
 ;
 ; vga.asm - VGA Mode X (320x400) with pixel-doubled PICO-8 blit
 ;
+; Object format: ELF32 (assemble with `nasm -f elf32`).
+; Linked by wlink alongside OMF C objects; symbols carry the
+; leading-underscore prefix that `wcc386 -ecc` produces for cdecl.
+;
 ; Calling convention: Watcom stack-based (-3s)
 ;   params at [ebp+8], [ebp+12], ...
 ;
@@ -43,7 +47,7 @@
 ; --------------------------------------------------------------------------
 section .rodata
 
-global _p8_palette_rgb6
+global _p8_palette_rgb6:data
 _p8_palette_rgb6:
     ; Standard palette (indices 0-15)
     db  0,  0,  0          ;  0: black
@@ -100,7 +104,7 @@ section .text
 ; void vga_ret(void)
 ; Restore 80x25 text mode
 ; ==========================================================================
-global _vga_ret
+global _vga_ret:function
 _vga_ret:
     push ebp
     mov  ebp, esp
@@ -116,7 +120,7 @@ _vga_ret:
 ; void vga_set_palette(const void *rgb6_table, unsigned int count)
 ; Program DAC entries 0..count-1 from rgb6_table
 ; ==========================================================================
-global _vga_set_palette
+global _vga_set_palette:function
 _vga_set_palette:
     push ebp
     mov  ebp, esp
@@ -146,7 +150,7 @@ _vga_set_palette:
 ; void vga_init(void)
 ; Set up Mode X 320x400 + program PICO-8 palette
 ; ==========================================================================
-global _vga_init
+global _vga_init:function
 _vga_init:
     push ebp
     mov  ebp, esp
@@ -219,7 +223,7 @@ _vga_init:
 ; void vga_flip(void)
 ; Wait for vretrace, flip display to back page, swap pages
 ; ==========================================================================
-global _vga_flip
+global _vga_flip:function
 _vga_flip:
     push ebp
     mov  ebp, esp
@@ -268,7 +272,7 @@ _vga_flip:
 ; void vga_blit(const void *screen_buf)
 ; Pixel-double 128x128 4bpp PICO-8 screen to 256x256 in Mode X back buffer
 ; ==========================================================================
-global _vga_blit
+global _vga_blit:function
 _vga_blit:
     push ebp
     mov  ebp, esp
