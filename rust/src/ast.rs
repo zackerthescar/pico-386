@@ -167,24 +167,40 @@ pub enum Suffix {
 
 // ── Name interning ───────────────────────────────────────────────────
 
+const NT_BUCKETS: usize = 64;
+const NT_BUCKET_MASK: u8 = (NT_BUCKETS - 1) as u8;
+
 pub struct NameTable {
     names: Vec<Vec<u8>>,
+    buckets: [Vec<u16>; NT_BUCKETS],
+}
+
+fn nt_hash(s: &[u8]) -> usize {
+    let len = s.len();
+    if len == 0 { return 0; }
+    let h = s[0] ^ s[len - 1] ^ (len as u8);
+    (h & NT_BUCKET_MASK) as usize
 }
 
 impl NameTable {
     pub fn new() -> Self {
-        NameTable { names: Vec::new() }
+        NameTable {
+            names: Vec::new(),
+            buckets: core::array::from_fn(|_| Vec::new()),
+        }
     }
 
     pub fn intern(&mut self, s: &[u8]) -> Name {
-        for (i, existing) in self.names.iter().enumerate() {
-            if existing.as_slice() == s {
-                return Name(i as u16);
+        let b = nt_hash(s);
+        for &idx in &self.buckets[b] {
+            if self.names[idx as usize].as_slice() == s {
+                return Name(idx);
             }
         }
-        let idx = self.names.len();
+        let idx = self.names.len() as u16;
         self.names.push(s.to_vec());
-        Name(idx as u16)
+        self.buckets[b].push(idx);
+        Name(idx)
     }
 
     pub fn resolve(&self, n: Name) -> &[u8] {
@@ -251,21 +267,26 @@ fn parse_bin_fixed(s: &[u8]) -> i32 {
 fn parse_dec_fixed(s: &[u8]) -> i32 {
     let mut int_part: i32 = 0;
     let mut i = 0;
-    // Integer part
+    // Integer part — stop accumulating once we're guaranteed to saturate.
+    // 16.16 max integer part is 32767; 32768 already exceeds representable range.
     while i < s.len() && s[i] >= b'0' && s[i] <= b'9' {
-        int_part = int_part.wrapping_mul(10).wrapping_add((s[i] - b'0') as i32);
+        if int_part < 32768 {
+            int_part = int_part * 10 + (s[i] - b'0') as i32;
+        }
         i += 1;
     }
     let mut frac: i32 = 0;
     if i < s.len() && s[i] == b'.' {
         i += 1;
-        // Parse fractional digits: accumulate as integer, then convert
-        // frac_val / 10^n_digits * 65536
+        // Cap accumulator at ~9 digits — 16.16 only has ~4.5 decimal digits
+        // of fractional precision, so further digits don't change the result.
         let mut frac_val: u32 = 0;
         let mut divisor: u32 = 1;
         while i < s.len() && s[i] >= b'0' && s[i] <= b'9' {
-            frac_val = frac_val * 10 + (s[i] - b'0') as u32;
-            divisor *= 10;
+            if divisor <= 100_000_000 {
+                frac_val = frac_val * 10 + (s[i] - b'0') as u32;
+                divisor *= 10;
+            }
             i += 1;
         }
         if divisor > 1 {
@@ -284,23 +305,37 @@ fn parse_dec_fixed(s: &[u8]) -> i32 {
             }
         }
     }
+    let mut result = if int_part > 32767 {
+        i32::MAX
+    } else {
+        (int_part << 16).wrapping_add(frac)
+    };
     // Handle exponent (e/E)
-    let mut result = int_part.wrapping_shl(16).wrapping_add(frac);
     if i < s.len() && (s[i] == b'e' || s[i] == b'E') {
         i += 1;
         let neg_exp = if i < s.len() && s[i] == b'-' { i += 1; true }
                       else if i < s.len() && s[i] == b'+' { i += 1; false }
                       else { false };
+        // 16.16 saturates at exp ~5; cap input to keep the loop bounded.
         let mut exp: u32 = 0;
         while i < s.len() && s[i] >= b'0' && s[i] <= b'9' {
-            exp = exp * 10 + (s[i] - b'0') as u32;
+            if exp < 100 {
+                exp = exp * 10 + (s[i] - b'0') as u32;
+            }
             i += 1;
         }
         for _ in 0..exp {
             if neg_exp {
                 result /= 10;
+                if result == 0 { break; }
+            } else if result > i32::MAX / 10 {
+                result = i32::MAX;
+                break;
+            } else if result < i32::MIN / 10 {
+                result = i32::MIN;
+                break;
             } else {
-                result = result.wrapping_mul(10);
+                result *= 10;
             }
         }
     }
@@ -417,10 +452,3 @@ pub fn suffix_is_call(s: &Suffix) -> bool {
     matches!(s, Suffix::Call(_) | Suffix::MethodCall(_, _))
 }
 
-/// Helper: convert Expr to Var for assignment targets. Panics if not an l-value.
-pub fn expr_to_var(e: Expr) -> Var {
-    match e {
-        Expr::Var(v) => v,
-        _ => Var::Name(Name(0)), // fallback; parser should prevent this
-    }
-}

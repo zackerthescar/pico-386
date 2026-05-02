@@ -286,25 +286,14 @@ peg::parser! {
             = base:var_base(nt)
               suffixes:(_ () s:var_suffix(nt) { s })*
             {
-                let mut result = base;
-                for s in suffixes {
-                    let base_expr = match result {
-                        Var::Name(n) => Expr::Var(Var::Name(n)),
-                        other => Expr::Var(other),
-                    };
-                    result = match s {
+                suffixes.into_iter().fold(base, |acc, s| {
+                    let base_expr = Expr::Var(acc);
+                    match s {
                         Suffix::Index(idx) => Var::Index(Box::new(base_expr), idx),
                         Suffix::Field(n) => Var::Field(Box::new(base_expr), n),
-                        // Call suffixes in a variable chain are intermediate
-                        Suffix::Call(args) => {
-                            // Can't assign to a call, but the grammar allows
-                            // call suffixes in the middle of a chain
-                            Var::Name(Name(0)) // shouldn't happen
-                        }
-                        Suffix::MethodCall(m, args) => Var::Name(Name(0)),
-                    };
-                }
-                result
+                        Suffix::Call(_) | Suffix::MethodCall(_, _) => unreachable!(),
+                    }
+                })
             }
 
         rule var_base(nt: &mut NameTable) -> Var
@@ -313,8 +302,6 @@ peg::parser! {
         rule var_suffix(nt: &mut NameTable) -> Suffix
             = "[" _ () e:expression(nt) _ () "]" { Suffix::Index(Box::new(e)) }
             / "." !(".") _ () n:name(nt) { Suffix::Field(n) }
-            / ":" !(":") _ () n:name(nt) _ () a:function_args(nt) { Suffix::MethodCall(n, a) }
-            / a:function_args(nt) { Suffix::Call(a) }
 
         // ── Function call (for statements) ───────────────────────────
 
@@ -548,12 +535,8 @@ peg::parser! {
             ) { s }
 
         rule return_statement(nt: &mut NameTable) -> Stat
-            = kw_return() (_ () vals:expr_list(nt) { vals })? _ () ";"?
-            {?
-                // This is a bit awkward because the optional expr_list
-                // is itself wrapped in Option from the outer optional
-                Ok(Stat::Return(Vec::new())) // simplified for now
-            }
+            = kw_return() vals:(_ () v:expr_list(nt) { v })? _ () ";"?
+            { Stat::Return(vals.unwrap_or_default()) }
 
         // Compound assignment: [local] var op= expr
         rule compound_statement(nt: &mut NameTable) -> Stat
