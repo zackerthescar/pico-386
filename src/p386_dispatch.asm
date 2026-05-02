@@ -4,6 +4,8 @@
 %define VM_ERROR_MSG    4
 %define VM_LAST_OPCODE  8
 %define VM_PROGRAM      12
+%define LP_BUF 0
+%define LP_STRING_ENTRIES 12
 %define LP_BYTECODE_SECTION 16
 %define VM_VALUE_STACK  32
 %define VM_BASE         32800
@@ -20,6 +22,7 @@
 %define TAG_NIL  0
 %define TAG_BOOL 1
 %define TAG_NUM  2
+%define TAG_STR  3
 
 %define VM_HALTED 1
 %define ERR_OPCODE -2
@@ -101,6 +104,12 @@ dispatch_table:
     dd op_ge
 %elif i = 0x37
     dd op_not
+%elif i = 0x38
+    dd op_len
+%elif i = 0x39
+    dd op_peek
+%elif i = 0x3a
+    dd op_peek2
 %elif i = 0x40
     dd op_jmp
 %elif i = 0x41
@@ -126,6 +135,8 @@ dispatch_table:
 section .bss
 align 4
 dest_tmp resd 1
+
+extern _p8_ram
 
 section .text
 global _p386_vm_run:function
@@ -539,6 +550,68 @@ op_not:
 .truth:
     mov  al, 1
     jmp  store_bool_al
+
+op_len:
+    movzx edx, ah                    ; A
+    mov  [dest_tmp], edx
+    shr  eax, 16
+    movzx edx, al                    ; B register (not RK)
+    mov  eax, [ebp + edx*8]
+    mov  ecx, [ebp + edx*8 + 4]
+    cmp  ecx, TAG_STR
+    je   .string
+    ; Table array_len support can share this opcode once TAG_TAB is
+    ; implemented; for now non-strings trap via the existing type path.
+    jmp  err_type_num
+.string:
+    mov  ebx, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
+    mov  eax, [ebx + eax*8 + 4]       ; StringEntry.len, source constant value is string-table index.
+    shl  eax, 16                      ; return PICO-8 NUM (16.16 fixed point)
+    mov  ecx, [dest_tmp]
+    mov  [ebp + ecx*8], eax
+    mov  dword [ebp + ecx*8 + 4], TAG_NUM
+    jmp  dispatch_next
+
+op_peek:
+    movzx edx, ah                    ; A
+    mov  [dest_tmp], edx
+    shr  eax, 16
+    movzx edx, al                    ; B register (not RK)
+    mov  eax, [ebp + edx*8]
+    mov  ecx, [ebp + edx*8 + 4]
+    cmp  ecx, TAG_NUM
+    jne  err_type_num
+    shr  eax, 16                      ; fixed-point address -> integer address
+    and  eax, 0xffff                  ; PICO-8 64K RAM wraps
+    movzx eax, byte [_p8_ram + eax]
+    shl  eax, 16                      ; mem8 result is NUM
+    mov  ecx, [dest_tmp]
+    mov  [ebp + ecx*8], eax
+    mov  dword [ebp + ecx*8 + 4], TAG_NUM
+    jmp  dispatch_next
+
+op_peek2:
+    movzx edx, ah                    ; A
+    mov  [dest_tmp], edx
+    shr  eax, 16
+    movzx edx, al                    ; B register (not RK)
+    mov  eax, [ebp + edx*8]
+    mov  ecx, [ebp + edx*8 + 4]
+    cmp  ecx, TAG_NUM
+    jne  err_type_num
+    shr  eax, 16                      ; fixed-point address -> integer address
+    and  eax, 0xffff
+    movzx ebx, byte [_p8_ram + eax]
+    inc  eax
+    and  eax, 0xffff
+    movzx eax, byte [_p8_ram + eax]
+    shl  eax, 8
+    or   eax, ebx                     ; little-endian mem16 with 64K wrap
+    shl  eax, 16                      ; mem16 result is NUM
+    mov  ecx, [dest_tmp]
+    mov  [ebp + ecx*8], eax
+    mov  dword [ebp + ecx*8 + 4], TAG_NUM
+    jmp  dispatch_next
 
 ; --- control ------------------------------------------------------------
 op_jmp:

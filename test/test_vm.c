@@ -1,6 +1,9 @@
 #include <string.h>
 #include "test.h"
 #include "p386_vm.h"
+#include "mem.h"
+
+P8Ram p8_ram;
 
 #define MAX_CODE 32
 #define MAX_CONST 16
@@ -40,7 +43,9 @@ typedef struct VmFixture {
     unsigned char buf[BUF_SIZE];
     unsigned long code_len;
     unsigned long const_len;
+    unsigned long string_data_len;
     int n_consts;
+    int n_strings;
 } VmFixture;
 
 static void put32(unsigned char *p, unsigned long v) {
@@ -67,6 +72,19 @@ static void fx_const(VmFixture *f, long value, unsigned long tag) {
     f->n_consts++;
 }
 
+static int fx_string(VmFixture *f, const char *s) {
+    unsigned long len = (unsigned long)strlen(s);
+    unsigned long table_off = STR_OFF + (unsigned long)f->n_strings * STRING_SIZE;
+    unsigned long data_off = BC_OFF + MAX_CODE * 4 + MAX_CONST * 8 + f->string_data_len;
+    int idx = f->n_strings;
+    put32(f->buf + table_off, data_off);
+    put32(f->buf + table_off + 4, len);
+    memcpy(f->buf + data_off, s, len);
+    f->string_data_len += len;
+    f->n_strings++;
+    return idx;
+}
+
 static void fx_header32(VmFixture *f, unsigned long off, unsigned long v) {
     put32(f->buf + off, v);
 }
@@ -87,13 +105,15 @@ static unsigned char *fx_finish(VmFixture *f, unsigned long *out_len) {
     unsigned long code_off = 0;
     unsigned long const_off = MAX_CODE * 4;
     unsigned long upval_off = const_off + f->const_len;
+    unsigned long strings_end = BC_OFF + MAX_CODE * 4 + MAX_CONST * 8 + f->string_data_len;
     unsigned long total = BC_OFF + upval_off;
+    if (total < strings_end) total = strings_end;
 
     fx_header32(f, HDR_MAGIC_OFF, P386_BC_MAGIC);
     fx_header32(f, HDR_VERSION_OFF, P386_BC_VERSION);
     fx_header32(f, HDR_TOTAL_SIZE_OFF, total);
     fx_header32(f, HDR_N_PROTOS_OFF, 1);
-    fx_header32(f, HDR_N_STRINGS_OFF, 0);
+    fx_header32(f, HDR_N_STRINGS_OFF, (unsigned long)f->n_strings);
     fx_header32(f, HDR_PROTO_TABLE_OFF, PROTO_OFF);
     fx_header32(f, HDR_STRING_TABLE_OFF, STR_OFF);
     fx_header32(f, HDR_BYTECODE_OFF, BC_OFF);
@@ -678,5 +698,63 @@ TEST(vm_tfor_opcodes_are_explicitly_unimplemented) {
     fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
     ASSERT_EQ(P386_VM_ERR_UNIMPL, run_fixture(&f, &vm));
     ASSERT_STR_EQ("opcode not implemented yet", vm.error_msg);
+    PASS();
+}
+
+TEST(vm_len_string_constant_returns_fixed_point_length) {
+    VmFixture f;
+    P386VMState vm;
+    int sid;
+    fx_init(&f);
+    sid = fx_string(&f, "pico386");
+    fx_const(&f, sid, P386_TAG_STR);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_LEN, 1, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 1, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 1, P386_FP_INT(7));
+    PASS();
+}
+
+TEST(vm_peek_reads_p8_ram_as_fixed_point_number) {
+    VmFixture f;
+    P386VMState vm;
+    memset(&p8_ram, 0, sizeof(p8_ram));
+    p8_ram.raw[0x4300] = 0xab;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(0x4300), P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_PEEK, 1, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 1, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 1, P386_FP_INT(0xab));
+    PASS();
+}
+
+TEST(vm_peek2_reads_little_endian_and_wraps_64k) {
+    VmFixture f;
+    P386VMState vm;
+    memset(&p8_ram, 0, sizeof(p8_ram));
+    p8_ram.raw[0xffff] = 0x34;
+    p8_ram.raw[0x0000] = 0x12;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(0xffff), P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_PEEK2, 1, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 1, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 1, P386_FP_INT(0x1234));
+    PASS();
+}
+
+TEST(vm_peek_requires_numeric_address) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_emit(&f, P386_ABC(P386_OP_LOADT, 0, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_PEEK, 1, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 1, 2, 0));
+    ASSERT_EQ(P386_VM_ERR_TYPE, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("expected number", vm.error_msg);
     PASS();
 }
