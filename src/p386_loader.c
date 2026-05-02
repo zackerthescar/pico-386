@@ -83,6 +83,7 @@ int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out)
             case 1: /* BOOL */ if (cval > 1) return 0; break;
             case 2: /* NUM  */ break;
             case 3: /* STR  */ if (cval >= h->n_strings) return 0; break;
+            case 6: /* CFUNC */ break;
             default: return 0;
             }
         }
