@@ -5,11 +5,19 @@
 #   ./test.sh              Run unit tests (TEST.EXE) in QEMU
 #   ./test.sh integration  Run integration test (MAIN.EXE + cartridge) in QEMU
 #   ./test.sh vga          Run VGA screenshot test (VGATEST.EXE) in QEMU
+#   ./test.sh carts        Run integration test against every cart in
+#                          test/carts.manifest plus optional Lexaloffle carts
+#                          dropped under $LEXALOFFLE_CARTS_DIR (see
+#                          test/CARTS.md). Carts are fetched into cache/carts/
+#                          which is gitignored.
 #
 # Environment variables:
-#   TIMEOUT   QEMU timeout in seconds (default: 30)
-#   CART_URL  URL to a .p8.png cartridge for integration tests
-#   CART_NAME DOS filename stem (default: TESTCART)
+#   TIMEOUT              QEMU timeout in seconds (default: 30)
+#   CART_URL             URL to a .p8.png cartridge for integration tests
+#   CART_NAME            DOS filename stem (default: TESTCART)
+#   LEXALOFFLE_CARTS_DIR Optional local directory of *.p8.png carts that may
+#                        not be redistributed (proprietary BBS uploads). Used
+#                        only by the 'carts' mode.
 
 set -euo pipefail
 
@@ -409,6 +417,124 @@ run_vga_test() {
     fi
 }
 
+# ── External cart matrix ──
+#
+# Builds MAIN.EXE once, then loops over every cart in test/carts.manifest plus
+# any *.p8.png in $LEXALOFFLE_CARTS_DIR. Each cart is judged against the same
+# serial-log heuristics as run_integration_test(); failures are summarised at
+# the end so one bad cart does not abort the run.
+
+CART_CACHE_DIR="${CART_CACHE_DIR:-$SCRIPT_DIR/cache/carts}"
+CART_MANIFEST="${CART_MANIFEST:-$SCRIPT_DIR/test/carts.manifest}"
+
+run_one_cart() {
+    local label="$1"
+    local cart_png="$2"
+    local dos_stem="$3"
+
+    [ -f "$cart_png" ] || { echo "  [SKIP] $label: missing $cart_png"; return 2; }
+
+    echo "── $label ($dos_stem) ─────────────────────────────────────"
+
+    build_floppy "$(printf '@echo off\r\nMAIN.EXE %s.P8\r\n' "$dos_stem")" \
+        "$DOS_DIR/MAIN.EXE::MAIN.EXE" \
+        "$cart_png::$dos_stem.P8"
+    run_qemu
+
+    local ok=true
+    grep -q "Going into VGA"   "$SERIAL_LOG" || { echo "  [FAIL] no serial init"; ok=false; }
+    grep -q "Loading cart"     "$SERIAL_LOG" || { echo "  [FAIL] cart load did not start"; ok=false; }
+    if grep -q "pico8_decomp: no code" "$SERIAL_LOG"; then
+        echo "  [FAIL] decompression produced no code"; ok=false
+    fi
+    grep -q "Lua code:" "$SERIAL_LOG" || { echo "  [FAIL] no Lua decompressed"; ok=false; }
+    if grep -q "p8_compile: FAIL" "$SERIAL_LOG"; then
+        echo "  [FAIL] compiler rejected code"; ok=false
+    fi
+
+    if [ "$ok" = true ]; then
+        echo "  [PASS] $label"
+        return 0
+    fi
+    echo "  serial tail:"
+    tail -n 20 "$SERIAL_LOG" | sed 's/^/    /'
+    return 1
+}
+
+run_carts_matrix() {
+    echo "=== Building pico-386 ==="
+    quiet_make pico
+    [ -f "$DOS_DIR/MAIN.EXE" ] || die "Build did not produce MAIN.EXE"
+
+    echo "=== Fetching permissive carts ==="
+    "$SCRIPT_DIR/script/fetch_carts.sh" || echo "(fetch_carts.sh reported issues; continuing with whatever is cached)"
+
+    local pass=0 fail=0 skip=0
+    local failed_labels=()
+
+    # Permissive carts from manifest
+    if [ -f "$CART_MANIFEST" ]; then
+        while IFS=$'\t' read -r dos_name url sha license source; do
+            dos_name="${dos_name%$'\r'}"
+            [ -z "${dos_name:-}" ] && continue
+            case "$dos_name" in \#*) continue ;; esac
+            local cart="$CART_CACHE_DIR/$dos_name.p8.png"
+            local label="manifest:$dos_name [$license]"
+            local rc=0
+            run_one_cart "$label" "$cart" "$dos_name" || rc=$?
+            case "$rc" in
+                0) pass=$((pass+1)) ;;
+                2) skip=$((skip+1)) ;;
+                *) fail=$((fail+1)); failed_labels+=("$label") ;;
+            esac
+        done < "$CART_MANIFEST"
+    fi
+
+    # Optional proprietary Lexaloffle carts (local-only, never committed).
+    if [ -n "${LEXALOFFLE_CARTS_DIR:-}" ] && [ -d "$LEXALOFFLE_CARTS_DIR" ]; then
+        echo "=== Lexaloffle local carts ($LEXALOFFLE_CARTS_DIR) ==="
+        local f
+        for f in "$LEXALOFFLE_CARTS_DIR"/*.p8.png; do
+            [ -f "$f" ] || continue
+            local base stem
+            base="$(basename "$f" .p8.png)"
+            # Compress to a DOS 8.3-safe stem: keep [A-Z0-9], truncate.
+            stem="$(printf '%s' "$base" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9' '_' | cut -c1-8)"
+            [ -n "$stem" ] || stem="LEXACART"
+            local label="lexaloffle:$base"
+            local rc=0
+            run_one_cart "$label" "$f" "$stem" || rc=$?
+            case "$rc" in
+                0) pass=$((pass+1)) ;;
+                2) skip=$((skip+1)) ;;
+                *) fail=$((fail+1)); failed_labels+=("$label") ;;
+            esac
+        done
+    else
+        echo "=== Lexaloffle carts: skipped (set LEXALOFFLE_CARTS_DIR to enable) ==="
+    fi
+
+    echo ""
+    echo "=== Cart matrix summary ==="
+    echo "  passed:  $pass"
+    echo "  failed:  $fail"
+    echo "  skipped: $skip"
+    if [ "$fail" -gt 0 ]; then
+        printf '  - %s\n' "${failed_labels[@]:-}"
+        echo ""
+        echo "CART MATRIX FAILED"
+        return 1
+    fi
+    if [ "$pass" -eq 0 ]; then
+        echo ""
+        echo "CART MATRIX: no carts ran (check network / manifest / LEXALOFFLE_CARTS_DIR)"
+        return 1
+    fi
+    echo ""
+    echo "CART MATRIX PASSED"
+    return 0
+}
+
 # ── Main ──
 
 case "$MODE" in
@@ -416,6 +542,7 @@ case "$MODE" in
     vm)          run_vm_tests ;;
     integration) run_integration_test ;;
     vga)         run_vga_test "$@" ;;
+    carts)       run_carts_matrix ;;
     all)         run_unit_tests && run_vm_tests && run_integration_test && run_vga_test "$@" ;;
-    *)           echo "Usage: $0 [unit|vm|integration|vga|all]" >&2; exit 1 ;;
+    *)           echo "Usage: $0 [unit|vm|integration|vga|carts|all]" >&2; exit 1 ;;
 esac

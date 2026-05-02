@@ -1,0 +1,32 @@
+# pico-386 cart integration manifest
+#
+# Format (TSV, '#' lines and blank lines ignored):
+#   <dos_name>\t<url>\t<sha256-or-"-">\t<license>\t<source>
+#
+# - dos_name : 8.3 stem used on the FAT floppy (uppercased, no extension).
+# - url      : direct download URL of a .p8.png cartridge.
+# - sha256   : expected SHA-256 of the downloaded file, or '-' to skip verify.
+# - license  : SPDX-ish identifier of the cart's license.
+# - source   : human-readable origin (project / author / repo path).
+#
+# Only permissively-licensed carts go in this file. Proprietary Lexaloffle BBS
+# carts must NOT be added here; supply them locally via the LEXALOFFLE_CARTS_DIR
+# environment variable (see test/CARTS.md).
+#
+# When sha256 is '-', the runner downloads anyway but prints a warning. After
+# verifying a cart works, lock its hash in by replacing '-' with the real sum
+# (printed by `script/fetch_carts.sh --print-hashes`).
+#
+# ── picotool sample carts (MIT) ─────────────────────────────────────────────
+# https://github.com/dansanderson/picotool — sample/test carts shipped under
+# the repository's MIT license. Raw URLs pin to a specific commit for
+# reproducibility; bump the SHA when intentionally rolling forward.
+PTOOLCRT	https://raw.githubusercontent.com/dansanderson/picotool/49808e5ddb21e886a5608a19c95ec3ca6f1ee541/tests/testdata/test_cart.p8.png	4a0c90794114ae0f2aa46ab42c926fcf09d898b4bce3df1f6ed831ad18540798	MIT	picotool@49808e5d:tests/testdata/test_cart.p8.png
+
+# ── shrinko8 sample carts (MIT) ─────────────────────────────────────────────
+# https://github.com/thisismypassport/shrinko8
+# (Add specific entries here once a known-good commit + path is verified.)
+
+# ── fake-08 sample carts (MIT) ──────────────────────────────────────────────
+# https://github.com/jtothebell/fake-08
+# (Add specific entries here once a known-good commit + path is verified.)
