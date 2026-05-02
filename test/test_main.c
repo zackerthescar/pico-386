@@ -1,4 +1,7 @@
 #include "test.h"
+#include "mem.h"
+
+P8Ram p8_ram;
 
 /*
  * Test declarations — each test file provides TEST(name) functions.

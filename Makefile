@@ -12,6 +12,9 @@ RUST_OBJS_DIR = rust/objs
 
 C_SRC	= 	src/main.c 					\
 			src/pico386.c				\
+			src/p386_loader.c			\
+			src/p386_obj.c				\
+			src/p386_builtins.c		\
 			src/print.c					\
 			src/cart.c 					\
 			src/pxa_compress_snippets.c	\

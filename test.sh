@@ -297,7 +297,7 @@ run_integration_test() {
     echo "=== Validation ==="
     local PASS=true
 
-    if grep -q "Going into VGA" "$SERIAL_LOG"; then
+    if grep -q "Going into VGA\|Initializing VGA" "$SERIAL_LOG"; then
         echo "  [PASS] Serial init OK"
     else
         echo "  [FAIL] No serial init message"
@@ -442,7 +442,7 @@ run_one_cart() {
     run_qemu
 
     local ok=true
-    grep -q "Going into VGA"   "$SERIAL_LOG" || { echo "  [FAIL] no serial init"; ok=false; }
+    grep -q "Going into VGA\|Initializing VGA" "$SERIAL_LOG" || { echo "  [FAIL] no serial init"; ok=false; }
     grep -q "Loading cart"     "$SERIAL_LOG" || { echo "  [FAIL] cart load did not start"; ok=false; }
     if grep -q "pico8_decomp: no code" "$SERIAL_LOG"; then
         echo "  [FAIL] decompression produced no code"; ok=false
