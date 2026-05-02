@@ -10,16 +10,32 @@ static uint32_t align4(uint32_t x) { return (x + 3U) & ~3U; }
 int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out) {
     const P386BcHeader *h;
     uint32_t i;
+    uint32_t proto_bytes;
+    uint32_t string_bytes;
+    uint32_t proto_end;
+    uint32_t string_end;
 
     if (!buf || !out || size < sizeof(P386BcHeader)) return 0;
     h = (const P386BcHeader *)buf;
     if (h->magic != P386_BC_MAGIC || h->version != P386_BC_VERSION) return 0;
     if (h->total_size != size) return 0;
     if (h->n_protos == 0) return 0;
+    if (h->n_protos > size / (uint32_t)sizeof(P386ProtoEntry)) return 0;
+    if (h->n_strings > size / (uint32_t)sizeof(P386StringEntry)) return 0;
+
+    proto_bytes = h->n_protos * (uint32_t)sizeof(P386ProtoEntry);
+    string_bytes = h->n_strings * (uint32_t)sizeof(P386StringEntry);
+
     if ((h->proto_table_offset & 3U) || (h->string_table_offset & 3U) || (h->bytecode_section_offset & 3U)) return 0;
-    if (!range_ok(h->proto_table_offset, h->n_protos * (uint32_t)sizeof(P386ProtoEntry), size)) return 0;
-    if (!range_ok(h->string_table_offset, h->n_strings * (uint32_t)sizeof(P386StringEntry), size)) return 0;
+    if (!range_ok(h->proto_table_offset, proto_bytes, size)) return 0;
+    if (!range_ok(h->string_table_offset, string_bytes, size)) return 0;
     if (!range_ok(h->bytecode_section_offset, 0, size)) return 0;
+
+    proto_end = h->proto_table_offset + proto_bytes;
+    string_end = h->string_table_offset + string_bytes;
+    if (h->proto_table_offset < sizeof(P386BcHeader)) return 0;
+    if (h->string_table_offset < proto_end) return 0;
+    if (h->bytecode_section_offset < string_end) return 0;
 
     out->buf = buf;
     out->buf_size = size;
@@ -32,13 +48,18 @@ int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out)
         uint32_t code_end;
         uint32_t const_end;
         uint32_t upval_len;
+        uint32_t const_len;
+
+        if ((p->bytecode_off & 3U) != 0) return 0;
         if ((p->bytecode_len & 3U) != 0) return 0;
+        if ((p->consts_off & 3U) != 0) return 0;
         if (!range_ok(h->bytecode_section_offset + p->bytecode_off, p->bytecode_len, size)) return 0;
         code_end = align4(p->bytecode_off + p->bytecode_len);
-        const_end = p->consts_off + (uint32_t)p->n_consts * 8U;
+        const_len = (uint32_t)p->n_consts * 8U;
+        const_end = p->consts_off + const_len;
         upval_len = (uint32_t)p->n_upvalues * 2U;
         if (p->consts_off < code_end) return 0;
-        if (!range_ok(h->bytecode_section_offset + p->consts_off, (uint32_t)p->n_consts * 8U, size)) return 0;
+        if (!range_ok(h->bytecode_section_offset + p->consts_off, const_len, size)) return 0;
         if (p->upvals_off < const_end) return 0;
         if (!range_ok(h->bytecode_section_offset + p->upvals_off, upval_len, size)) return 0;
         if (p->n_regs == 0) return 0;
