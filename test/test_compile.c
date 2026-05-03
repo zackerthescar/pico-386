@@ -4,6 +4,8 @@
 #include "test.h"
 #include "rust.h"
 #include "p386_vm.h"
+#include "builtins.h"
+#include "mem.h"
 
 /*
  * Tests for the PICO-8 Lua compiler (Rust FFI).
@@ -425,6 +427,29 @@ TEST(compile_lua_function_call_runs_vm) {
     ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
     ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
     ASSERT_EQ(42 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_lifecycle_slots_and_host_call_draw_pixels) {
+    const char *code = "function _init() cls(1) end\nfunction _draw() pset(3,4,7) end";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    p8_ram_init();
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_FUNC, vm.globals[P386_GLOBAL_INIT].tag);
+    ASSERT_EQ(P386_TAG_FUNC, vm.globals[P386_GLOBAL_DRAW].tag);
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_INIT, 0, 0));
+    ASSERT_EQ(0x11, p8_ram.mem.screen[0]);
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_DRAW, 0, 0));
+    ASSERT_EQ(0x71, p8_ram.mem.screen[4 * 64 + 1]);
     p8_free_program(prog);
     PASS();
 }

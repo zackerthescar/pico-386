@@ -67,6 +67,7 @@ int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out)
 void p386_vm_init(P386VMState *vm);
 int p386_vm_load(P386VMState *vm, const uint8_t *buf, uint32_t size);
 int p386_vm_run(P386VMState *vm);
+int p386_vm_call_global(P386VMState *vm, uint8_t slot, uint8_t nargs, uint8_t want_rets);
 const char *p386_vm_status_name(int status);
 
 #endif

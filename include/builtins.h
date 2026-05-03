@@ -25,7 +25,15 @@ typedef enum P386BuiltinSlot {
     P386_BUILTIN_MUSIC,
     P386_BUILTIN_PAIRS,
     P386_BUILTIN_IPAIRS,
-    P386_BUILTIN_COUNT
+    P386_BUILTIN_COUNT,
+
+    /* Stable user-global slots the host runtime calls directly. */
+    P386_GLOBAL_INIT = P386_BUILTIN_COUNT,
+    P386_GLOBAL_UPDATE,
+    P386_GLOBAL_UPDATE60,
+    P386_GLOBAL_DRAW,
+
+    P386_USER_GLOBAL_BASE
 } P386BuiltinSlot;
 
 #endif /* BUILTINS_H */

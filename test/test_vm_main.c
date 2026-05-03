@@ -55,6 +55,8 @@ void main() {
     RUN_TEST(vm_setfield_getfield_round_trip_string_key);
     RUN_TEST(vm_getfield_requires_string_const);
     RUN_TEST(vm_call_cfunc_noop_pads_requested_results);
+    RUN_TEST(vm_builtin_cls_pset_pget_mutate_framebuffer);
+    RUN_TEST(vm_call_global_missing_is_noop);
     RUN_TEST(vm_closure_creates_func_value);
     RUN_TEST(vm_call_lua_fixed_args_returns_sum);
     RUN_TEST(vm_call_lua_missing_args_are_nil);

@@ -40,6 +40,10 @@ int p386_builtin_print(P386VMState *vm, P386Value *args,
                        uint8_t nargs, uint8_t want_rets);
 int p386_builtin_cls(P386VMState *vm, P386Value *args,
                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_pset(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_pget(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
 int p386_builtin_noop(P386VMState *vm, P386Value *args,
                       uint8_t nargs, uint8_t want_rets);
 int p386_builtin_pairs(P386VMState *vm, P386Value *args,

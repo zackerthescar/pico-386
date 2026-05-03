@@ -548,10 +548,16 @@ TEST(vm_init_registers_cfunc_builtins) {
     ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_CLS].tag);
     ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_cls,
               vm.globals[P386_BUILTIN_CLS].value);
+    ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_PSET].tag);
+    ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_pset,
+              vm.globals[P386_BUILTIN_PSET].value);
+    ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_PGET].tag);
+    ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_pget,
+              vm.globals[P386_BUILTIN_PGET].value);
     ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_PAIRS].tag);
     ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_pairs,
               vm.globals[P386_BUILTIN_PAIRS].value);
-    ASSERT_EQ(P386_TAG_NIL, vm.globals[P386_BUILTIN_COUNT].tag);
+    ASSERT_EQ(P386_TAG_NIL, vm.globals[P386_GLOBAL_INIT].tag);
     PASS();
 }
 
@@ -1048,6 +1054,43 @@ TEST(vm_call_cfunc_pairs_returns_iterator_state_nil) {
 }
 
 
+
+TEST(vm_builtin_cls_pset_pget_mutate_framebuffer) {
+    P386VMState vm;
+    P386Value args[3];
+    p8_ram_init();
+    p386_vm_init(&vm);
+
+    args[0].value = P386_FP_INT(2);
+    args[0].tag = P386_TAG_NUM;
+    ASSERT_EQ(0, p386_builtin_cls(&vm, args, 1, 0));
+    ASSERT_EQ(0x22, p8_ram.mem.screen[0]);
+
+    args[0].value = P386_FP_INT(3);
+    args[0].tag = P386_TAG_NUM;
+    args[1].value = P386_FP_INT(1);
+    args[1].tag = P386_TAG_NUM;
+    args[2].value = P386_FP_INT(5);
+    args[2].tag = P386_TAG_NUM;
+    ASSERT_EQ(0, p386_builtin_pset(&vm, args, 3, 0));
+    ASSERT_EQ(0x52, p8_ram.mem.screen[1 * 64 + 1]);
+
+    args[0].value = P386_FP_INT(3);
+    args[0].tag = P386_TAG_NUM;
+    args[1].value = P386_FP_INT(1);
+    args[1].tag = P386_TAG_NUM;
+    ASSERT_EQ(1, p386_builtin_pget(&vm, args, 2, 1));
+    ASSERT_EQ(P386_TAG_NUM, args[0].tag);
+    ASSERT_EQ(P386_FP_INT(5), args[0].value);
+    PASS();
+}
+
+TEST(vm_call_global_missing_is_noop) {
+    P386VMState vm;
+    p386_vm_init(&vm);
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_DRAW, 0, 0));
+    PASS();
+}
 TEST(vm_closure_creates_func_value) {
     VmFixture f;
     P386VMState vm;

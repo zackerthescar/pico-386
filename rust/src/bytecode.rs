@@ -72,7 +72,12 @@ pub const P386_BUILTIN_SFX: u8 = 12;
 pub const P386_BUILTIN_MUSIC: u8 = 13;
 pub const P386_BUILTIN_PAIRS: u8 = 14;
 pub const P386_BUILTIN_IPAIRS: u8 = 15;
-pub const P386_USER_GLOBAL_BASE: u8 = 16;
+pub const P386_BUILTIN_COUNT: u8 = 16;
+pub const P386_GLOBAL_INIT: u8 = 16;
+pub const P386_GLOBAL_UPDATE: u8 = 17;
+pub const P386_GLOBAL_UPDATE60: u8 = 18;
+pub const P386_GLOBAL_DRAW: u8 = 19;
+pub const P386_USER_GLOBAL_BASE: u8 = 20;
 
 #[derive(Clone)]
 pub enum Constant {

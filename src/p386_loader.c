@@ -1,6 +1,7 @@
 #include <string.h>
 #include "p386_vm.h"
 #include "p386_builtins.h"
+#include "p386_obj.h"
 
 static int range_ok(uint32_t off, uint32_t len, uint32_t size) {
     return off <= size && len <= size - off;
@@ -112,6 +113,46 @@ int p386_vm_load(P386VMState *vm, const uint8_t *buf, uint32_t size) {
     vm->base = vm->value_stack;
     vm->top = vm->base + vm->current_proto->n_regs;
     return 1;
+}
+
+int p386_vm_call_global(P386VMState *vm, uint8_t slot, uint8_t nargs, uint8_t want_rets) {
+    P386Closure *closure;
+    uint8_t i;
+
+    if (!vm) return P386_VM_ERR_TYPE;
+    if (vm->globals[slot].tag == P386_TAG_NIL) return P386_VM_HALTED;
+    if (vm->globals[slot].tag != P386_TAG_FUNC) {
+        vm->status = P386_VM_ERR_TYPE;
+        vm->error_msg = "expected function";
+        return vm->status;
+    }
+    closure = (P386Closure *)(uintptr_t)vm->globals[slot].value;
+    if (!closure || !closure->proto) {
+        vm->status = P386_VM_ERR_TYPE;
+        vm->error_msg = "expected function";
+        return vm->status;
+    }
+    if (nargs > closure->proto->n_params) nargs = closure->proto->n_params;
+    if ((uint32_t)closure->proto->n_regs > P386_VALUE_STACK_SLOTS) {
+        vm->status = P386_VM_ERR_BOUNDS;
+        vm->error_msg = "register/constant out of bounds";
+        return vm->status;
+    }
+
+    vm->status = P386_VM_OK;
+    vm->error_msg = 0;
+    vm->call_depth = 0;
+    vm->base = vm->value_stack;
+    vm->current_proto = closure->proto;
+    vm->top = vm->base + closure->proto->n_regs;
+    vm->ip = (const uint32_t *)(vm->program.bytecode_section + closure->proto->bytecode_off);
+
+    for (i = 0; i < closure->proto->n_regs; i++) {
+        vm->base[i].value = 0;
+        vm->base[i].tag = P386_TAG_NIL;
+    }
+    (void)want_rets;
+    return p386_vm_run(vm);
 }
 
 const char *p386_vm_status_name(int status) {

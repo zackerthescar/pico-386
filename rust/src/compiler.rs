@@ -186,6 +186,10 @@ impl<'a> CodeGen<'a> {
             b"music" => P386_BUILTIN_MUSIC,
             b"pairs" => P386_BUILTIN_PAIRS,
             b"ipairs" => P386_BUILTIN_IPAIRS,
+            b"_init" => P386_GLOBAL_INIT,
+            b"_update" => P386_GLOBAL_UPDATE,
+            b"_update60" => P386_GLOBAL_UPDATE60,
+            b"_draw" => P386_GLOBAL_DRAW,
             _ => {
                 if let Some(i) = self.globals.iter().position(|&x| x == n) {
                     P386_USER_GLOBAL_BASE.saturating_add(i as u8)
