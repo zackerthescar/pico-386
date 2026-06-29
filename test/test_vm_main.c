@@ -58,6 +58,8 @@ void main() {
     RUN_TEST(vm_builtin_cls_pset_pget_mutate_framebuffer);
     RUN_TEST(vm_call_global_missing_is_noop);
     RUN_TEST(vm_closure_creates_func_value);
+    RUN_TEST(vm_upvalue_runtime_smoke);
+    RUN_TEST(vm_closure_captures_parent_local_via_upvalue);
     RUN_TEST(vm_call_lua_fixed_args_returns_sum);
     RUN_TEST(vm_call_lua_missing_args_are_nil);
     RUN_TEST(vm_call_lua_pads_requested_results);

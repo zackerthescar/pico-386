@@ -28,10 +28,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "132dca9b868d927b35b5dd728167b2dee150eb1ad686008fc71ccb298b776fca"
 
 [[package]]
-name = "pico386-rs"
+name = "pico386-core"
 version = "0.1.0"
 dependencies = [
  "peg",
+]
+
+[[package]]
+name = "pico386-rs"
+version = "0.1.0"
+dependencies = [
+ "pico386-core",
 ]
 
 [[package]]

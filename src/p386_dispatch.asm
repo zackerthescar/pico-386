@@ -1089,22 +1089,25 @@ op_closure:
     movzx edx, byte [eax + 8]      ; n_upvalues
     test edx, edx
     jz   .store
-    mov  ebx, [edi + VM_CURRENT_CLOSURE]
-    test ebx, ebx
-    jz   err_type_upval
+    ; Note: parent-local upvalues (source 0) do not require a current closure;
+    ; only parent-upvalue captures (source 1) dereference VM_CURRENT_CLOSURE,
+    ; and that path validates it itself. The main chunk legitimately creates
+    ; upvalue-bearing closures with current_closure == NULL.
 
     push esi
     mov  ecx, [eax + 4]            ; proto*
     mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
     add  esi, [ecx + PE_UPVALS_OFF]
+    mov  [scratch_a + 4], edx      ; n_upvalues (clobbered by the C call below)
     xor  ecx, ecx                  ; i
 .up_loop:
-    cmp  ecx, edx
+    cmp  ecx, [scratch_a + 4]
     jae  .up_done
     movzx eax, byte [esi + ecx*2]      ; source
     movzx ebx, byte [esi + ecx*2 + 1]  ; index
     cmp  eax, 0
     jne  .from_parent_up
+    mov  [scratch_a + 0], ecx      ; spill i across cdecl call
     lea  eax, [ebp + ebx*8]
     push eax                       ; slot
     lea  eax, [edi + VM_OPEN_UPVALUES]
@@ -1113,6 +1116,7 @@ op_closure:
     add  esp, 8
     test eax, eax
     jz   .up_oom
+    mov  ecx, [scratch_a + 0]      ; restore i
     mov  ebx, [scratch_a + 12]
     mov  [ebx + 12 + ecx*4], eax
     inc  ecx

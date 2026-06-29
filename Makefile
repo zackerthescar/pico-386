@@ -100,7 +100,9 @@ $(RUST_AR): FORCE
 
 $(RUST_OBJS_DIR): $(RUST_AR)
 	rm -rf $(RUST_OBJS_DIR) && mkdir -p $(RUST_OBJS_DIR)
-	cd $(RUST_OBJS_DIR) && ar x ../../$(RUST_AR) $$(ar t ../../$(RUST_AR) | grep pico386_rs)
+	cd $(RUST_OBJS_DIR) && ar x ../../$(RUST_AR)
+	@echo "Pruning unreferenced Rust/core/alloc objects (keep EXE small)..."
+	@python3 script/resolve_rust_objs.py --prune $(RUST_OBJS_DIR)
 	@echo "Patching ELF R_386_PLT32 -> R_386_PC32 for wlink compatibility..."
 	@python3 -c "$$ELF_PATCH_SCRIPT" $(RUST_OBJS_DIR)/*.o
 

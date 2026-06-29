@@ -3,6 +3,7 @@
 #include "p386_vm.h"
 #include "p386_builtins.h"
 #include "mem.h"
+#include "p386_obj.h"
 
 P8Ram p8_ram;
 
@@ -239,6 +240,79 @@ static int run_two_proto_fixture(VmFixture *f, P386VMState *vm,
                                              child_n_params, child_n_regs);
     if (!p386_vm_load(vm, buf, len)) return vm->status;
     return p386_vm_run(vm);
+}
+
+/* Hand-built two-proto buffer with an upvalue descriptor on the child proto.
+ * main: LOADK R0=K0; CLOSURE R1=child(captures parent local 0); CALL R1();
+ *       MOVE R0,R1; RETURN R0.
+ * child: GETUPVAL R0,0; RETURN R0 (b=2).  upvalue[0] = (source=0, index=0). */
+static int run_upvalue_capture_fixture(VmFixture *f, P386VMState *vm,
+                                       unsigned long *out_result) {
+    unsigned long bc_off = PROTO_OFF + 2UL * PROTO_SIZE;
+    unsigned long off = 0;
+    unsigned long main_code_off, main_consts_off, main_upvals_off;
+    unsigned long child_code_off, child_consts_off, child_upvals_off;
+    unsigned long total, len;
+    memset(f, 0, sizeof(*f));
+
+    main_code_off = off;
+    put32(f->buf + bc_off + off, P386_ABX(P386_OP_LOADK, 0, 0)); off += 4;
+    put32(f->buf + bc_off + off, P386_ABX(P386_OP_CLOSURE, 1, 1)); off += 4;
+    put32(f->buf + bc_off + off, P386_ABC(P386_OP_CALL, 1, 1, 2)); off += 4;
+    put32(f->buf + bc_off + off, P386_ABC(P386_OP_MOVE, 0, 1, 0)); off += 4;
+    put32(f->buf + bc_off + off, P386_ABC(P386_OP_RETURN, 0, 2, 0)); off += 4;
+    main_consts_off = off;
+    put32(f->buf + bc_off + off, (unsigned long)P386_FP_INT(7)); off += 4;
+    put32(f->buf + bc_off + off, P386_TAG_NUM); off += 4;
+    main_upvals_off = off;  /* main has no upvalues */
+
+    child_code_off = off;
+    put32(f->buf + bc_off + off, P386_ABC(P386_OP_GETUPVAL, 0, 0, 0)); off += 4;
+    put32(f->buf + bc_off + off, P386_ABC(P386_OP_RETURN, 0, 2, 0)); off += 4;
+    child_consts_off = off;
+    child_upvals_off = off;
+    f->buf[bc_off + off] = 0; /* source: parent local */
+    f->buf[bc_off + off + 1] = 0; /* index 0 */
+    off += 2;
+    while (off & 3) off++;
+    total = bc_off + off;
+
+    fx_header32(f, HDR_MAGIC_OFF, P386_BC_MAGIC);
+    fx_header32(f, HDR_VERSION_OFF, P386_BC_VERSION);
+    fx_header32(f, HDR_TOTAL_SIZE_OFF, total);
+    fx_header32(f, HDR_N_PROTOS_OFF, 2);
+    fx_header32(f, HDR_N_STRINGS_OFF, 0);
+    fx_header32(f, HDR_PROTO_TABLE_OFF, PROTO_OFF);
+    fx_header32(f, HDR_STRING_TABLE_OFF, PROTO_OFF + 2UL * PROTO_SIZE);
+    fx_header32(f, HDR_BYTECODE_OFF, bc_off);
+
+    put32(f->buf + PROTO_OFF + PROTO_BYTECODE_OFF_OFF, main_code_off);
+    put32(f->buf + PROTO_OFF + PROTO_BYTECODE_LEN_OFF, main_consts_off - main_code_off);
+    put32(f->buf + PROTO_OFF + PROTO_CONSTS_OFF_OFF, main_consts_off);
+    put32(f->buf + PROTO_OFF + PROTO_UPVALS_OFF_OFF, main_upvals_off);
+    f->buf[PROTO_OFF + PROTO_N_CONSTS_OFF] = 1;
+    f->buf[PROTO_OFF + PROTO_N_PARAMS_OFF] = 0;
+    f->buf[PROTO_OFF + PROTO_N_REGS_OFF] = 4;
+    f->buf[PROTO_OFF + PROTO_N_UPVALS_OFF] = 0;
+    f->buf[PROTO_OFF + PROTO_FLAGS_OFF] = P386_PROTO_FLAG_MAIN;
+
+    put32(f->buf + PROTO_OFF + PROTO_SIZE + PROTO_BYTECODE_OFF_OFF, child_code_off);
+    put32(f->buf + PROTO_OFF + PROTO_SIZE + PROTO_BYTECODE_LEN_OFF, child_consts_off - child_code_off);
+    put32(f->buf + PROTO_OFF + PROTO_SIZE + PROTO_CONSTS_OFF_OFF, child_consts_off);
+    put32(f->buf + PROTO_OFF + PROTO_SIZE + PROTO_UPVALS_OFF_OFF, child_upvals_off);
+    f->buf[PROTO_OFF + PROTO_SIZE + PROTO_N_CONSTS_OFF] = 0;
+    f->buf[PROTO_OFF + PROTO_SIZE + PROTO_N_PARAMS_OFF] = 0;
+    f->buf[PROTO_OFF + PROTO_SIZE + PROTO_N_REGS_OFF] = 1;
+    f->buf[PROTO_OFF + PROTO_SIZE + PROTO_N_UPVALS_OFF] = 1;
+    f->buf[PROTO_OFF + PROTO_SIZE + PROTO_FLAGS_OFF] = 0;
+
+    if (!p386_vm_load(vm, f->buf, total)) return vm->status;
+    (void)len;
+    {
+        int rc = p386_vm_run(vm);
+        *out_result = (unsigned long)vm->value_stack[0].value;
+        return rc;
+    }
 }
 
 #define ASSERT_TAG(vm, reg, t) ASSERT_EQ((t), (vm).value_stack[(reg)].tag)
@@ -1108,6 +1182,37 @@ TEST(vm_closure_creates_func_value) {
     ASSERT_TAG(vm, 0, P386_TAG_FUNC);
     ASSERT_NEQ(0, vm.value_stack[0].value);
     ASSERT_EQ(0, vm.call_depth);
+    PASS();
+}
+
+TEST(vm_upvalue_runtime_smoke) {
+    /* Directly exercise the C closure/upvalue helpers to localize failures. */
+    P386VMState vm;
+    P386Upvalue *head = 0;
+    P386Upvalue *uv;
+    P386Closure *c;
+    P386Value slot;
+    p386_vm_init(&vm);
+    slot.value = P386_FP_INT(7); slot.tag = P386_TAG_NUM;
+    uv = p386_upvalue_find_or_add(&head, &slot);
+    ASSERT_NOT_NULL(uv);
+    ASSERT_EQ((void *)&slot, (void *)uv->slot);
+    c = p386_closure_new(1, vm.program.protos, 1);
+    ASSERT_NOT_NULL(c);
+    ASSERT_EQ(1, c->n_upvalues);
+    c->upvalues[0] = uv;
+    ASSERT_EQ((void *)uv, (void *)c->upvalues[0]);
+    ASSERT_EQ(P386_FP_INT(7), c->upvalues[0]->slot->value);
+    PASS();
+}
+
+TEST(vm_closure_captures_parent_local_via_upvalue) {
+    VmFixture f;
+    P386VMState vm;
+    unsigned long result = 0;
+    ASSERT_EQ(P386_VM_HALTED, run_upvalue_capture_fixture(&f, &vm, &result));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ((unsigned long)P386_FP_INT(7), result);
     PASS();
 }
 

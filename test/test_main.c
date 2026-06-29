@@ -58,7 +58,7 @@ void main() {
     RUN_TEST(compile_local_function_call_runs_vm);
     RUN_TEST(compile_function_literal_call_runs_vm);
     RUN_TEST(compile_nested_noncapturing_function_call_runs_vm);
-    RUN_TEST(compile_captured_local_rejected_until_upvalues);
+    RUN_TEST(compile_captured_local_runs_vm);
     RUN_TEST(compile_lifecycle_slots_and_host_call_draw_pixels);
 
     TEST_REPORT();

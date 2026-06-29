@@ -16,6 +16,9 @@ pub const P386_OP_LOADF: u8 = 0x04;
 pub const P386_OP_LOADN: u8 = 0x05;
 pub const P386_OP_GETGLOBAL: u8 = 0x10;
 pub const P386_OP_SETGLOBAL: u8 = 0x11;
+pub const P386_OP_GETUPVAL: u8 = 0x12;
+pub const P386_OP_SETUPVAL: u8 = 0x13;
+pub const P386_OP_CLOSE: u8 = 0x14;
 pub const P386_OP_NEWTABLE: u8 = 0x18;
 pub const P386_OP_GETTABLE: u8 = 0x19;
 pub const P386_OP_SETTABLE: u8 = 0x1a;
@@ -52,8 +55,13 @@ pub const P386_OP_CONCAT: u8 = 0x3b;
 pub const P386_OP_JMP: u8 = 0x40;
 pub const P386_OP_JMPF: u8 = 0x41;
 pub const P386_OP_JMPT: u8 = 0x42;
+pub const P386_OP_FORPREP: u8 = 0x45;
+pub const P386_OP_FORLOOP: u8 = 0x46;
+pub const P386_OP_TFORCALL: u8 = 0x47;
+pub const P386_OP_TFORLOOP: u8 = 0x48;
 pub const P386_OP_CLOSURE: u8 = 0x50;
 pub const P386_OP_CALL: u8 = 0x51;
+pub const P386_OP_TAILCALL: u8 = 0x52;
 pub const P386_OP_RETURN: u8 = 0x53;
 
 pub const P386_BUILTIN_PRINT: u8 = 0;
@@ -97,15 +105,18 @@ pub struct FuncProto {
     pub constants: Vec<Constant>,
     pub prototypes: Vec<FuncProto>,
     pub instructions: Vec<u32>,
+    /// Upvalue descriptors: (source, index). source 0 = parent local register,
+    /// source 1 = parent upvalue index.
+    pub upvalues: Vec<(u8, u8)>,
     pub n_regs: u8,
     pub n_params: u8,
 }
 
 impl FuncProto {
-    pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, n_regs: u8, n_params: u8) -> Self {
+    pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, upvalues: Vec<(u8, u8)>, n_regs: u8, n_params: u8) -> Self {
         let proto_count = count_protos(&prototypes);
-        let code = emit_program(&instructions, &constants, &prototypes, n_regs, n_params);
-        Self { code, proto_count, constants, prototypes, instructions, n_regs, n_params }
+        let code = emit_program(&instructions, &constants, &prototypes, &upvalues, n_regs, n_params);
+        Self { code, proto_count, constants, prototypes, instructions, upvalues, n_regs, n_params }
     }
 }
 
@@ -179,22 +190,30 @@ fn rewrite_nested_closure_indices(insns: &[u32], child_base: u16, child_protos: 
     }).collect()
 }
 
-fn flatten_protos<'a>(root: (&'a [u32], &'a [Constant], u8, u8, &'a [FuncProto]), out: &mut Vec<(Vec<u32>, &'a [Constant], u8, u8)>) {
+struct FlatProto<'a> {
+    insns: Vec<u32>,
+    consts: &'a [Constant],
+    upvalues: &'a [(u8, u8)],
+    regs: u8,
+    params: u8,
+}
+
+fn flatten_protos<'a>(root: (&'a [u32], &'a [Constant], &'a [(u8, u8)], u8, u8, &'a [FuncProto]), out: &mut Vec<FlatProto<'a>>) {
     let root_index = out.len() as u16;
     let child_base = root_index.saturating_add(1);
-    let (insns, consts, regs, params, children) = root;
+    let (insns, consts, upvalues, regs, params, children) = root;
     let rewritten = rewrite_nested_closure_indices(insns, child_base, children);
-    out.push((rewritten, consts, regs, params));
+    out.push(FlatProto { insns: rewritten, consts, upvalues, regs, params });
     for p in children {
-        flatten_protos((&p.instructions, &p.constants, p.n_regs, p.n_params, &p.prototypes), out);
+        flatten_protos((&p.instructions, &p.constants, &p.upvalues, p.n_regs, p.n_params, &p.prototypes), out);
     }
 }
 
-pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[FuncProto], n_regs: u8, n_params: u8) -> Vec<u8> {
+pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[FuncProto], upvalues: &[(u8, u8)], n_regs: u8, n_params: u8) -> Vec<u8> {
     let mut strings = Vec::new();
     collect_all_strings(constants, prototypes, &mut strings);
     let mut protos = Vec::new();
-    flatten_protos((instructions, constants, n_regs, n_params, prototypes), &mut protos);
+    flatten_protos((instructions, constants, upvalues, n_regs, n_params, prototypes), &mut protos);
     let n_protos = protos.len() as u32;
     let n_strings = strings.len() as u32;
 
@@ -231,13 +250,13 @@ pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[
 
     while out.len() < bytecode_section_offset { out.push(0); }
 
-    for (pi, (insns, consts, regs, params)) in protos.iter().enumerate() {
+    for (pi, fp) in protos.iter().enumerate() {
         let code_off = out.len() - bytecode_section_offset;
-        for &ins in insns { push_u32(&mut out, ins); }
+        for &ins in &fp.insns { push_u32(&mut out, ins); }
         pad4(&mut out);
-        let code_len = insns.len() * 4;
+        let code_len = fp.insns.len() * 4;
         let consts_off = out.len() - bytecode_section_offset;
-        for c in consts.iter().take(255) {
+        for c in fp.consts.iter().take(255) {
             match c {
                 Constant::Nil => { push_i32(&mut out, 0); push_u32(&mut out, P386_TAG_NIL); }
                 Constant::Bool(v) => { push_i32(&mut out, if *v { 1 } else { 0 }); push_u32(&mut out, P386_TAG_BOOL); }
@@ -247,15 +266,21 @@ pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[
         }
         pad4(&mut out);
         let upvals_off = out.len() - bytecode_section_offset;
+        // Upvalue descriptors: 2 bytes each (source, index).
+        for uv in fp.upvalues.iter().take(255) {
+            push_u8(&mut out, uv.0);
+            push_u8(&mut out, uv.1);
+        }
+        pad4(&mut out);
         let patch = proto_patch_start + pi * 24;
         patch_u32(&mut out, patch, code_off as u32);
         patch_u32(&mut out, patch + 4, code_len as u32);
         patch_u32(&mut out, patch + 8, consts_off as u32);
         patch_u32(&mut out, patch + 12, upvals_off as u32);
-        out[patch + 16] = consts.len().min(255) as u8;
-        out[patch + 17] = *params;
-        out[patch + 18] = (*regs).max(1);
-        out[patch + 19] = 0;
+        out[patch + 16] = fp.consts.len().min(255) as u8;
+        out[patch + 17] = fp.params;
+        out[patch + 18] = fp.regs.max(1);
+        out[patch + 19] = fp.upvalues.len().min(255) as u8;
         out[patch + 20] = if pi == 0 { P386_PROTO_FLAG_MAIN } else { 0 };
     }
 
