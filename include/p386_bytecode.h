@@ -6,7 +6,8 @@
 #define P386_BC_MAGIC   0x36383350UL /* "P386" little-endian */
 #define P386_BC_VERSION 1UL
 
-#define P386_PROTO_FLAG_MAIN 0x01
+#define P386_PROTO_FLAG_MAIN   0x01
+#define P386_PROTO_FLAG_VARARG 0x02
 
 /* Value tags: value at +0, tag at +4. Keep in sync with BYTECODE.md. */
 #define P386_TAG_NIL   0UL
@@ -72,6 +73,7 @@
 #define P386_OP_CALL      0x51
 #define P386_OP_TAILCALL  0x52
 #define P386_OP_RETURN    0x53
+#define P386_OP_VARARG    0x54
 
 #pragma pack(push, 1)
 typedef struct P386BcHeader {

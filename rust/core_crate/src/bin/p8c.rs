@@ -13,6 +13,16 @@ fn main() {
     };
     match pico386_core::compile_source(&src) {
         Ok(proto) => {
+            if std::env::var("P8C_RAW").is_ok() {
+                let bc = &proto.code;
+                let n = u32::from_le_bytes([bc[12], bc[13], bc[14], bc[15]]);
+                let pt = u32::from_le_bytes([bc[20], bc[21], bc[22], bc[23]]) as usize;
+                for i in 0..n as usize {
+                    let b = pt + i * 24;
+                    eprintln!("proto {} n_params={} n_regs={} n_upvals={} flags={:#04x}",
+                        i, bc[b + 17], bc[b + 18], bc[b + 19], bc[b + 20]);
+                }
+            }
             print!("{}", pico386_core::disasm::disasm(&proto));
         }
         Err(e) => {

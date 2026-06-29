@@ -496,6 +496,138 @@ TEST(compile_lua_function_call_runs_vm) {
     PASS();
 }
 
+TEST(compile_multi_return_three_values_runs_vm) {
+    /* Regression: returning >=3 values and binding them all exercised an
+     * ebx-clobber in the RETURN copy loop that dropped the 3rd value. */
+    const char *code =
+        "function trip() return 7,14,21 end\n"
+        "local a,b,c = trip()\n"
+        "return c";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(21 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_varargs_sum_runs_vm) {
+    /* sum(...) folds an arbitrary number of arguments via select-style access
+     * using a fixed unpack. Here we forward varargs into locals and add. */
+    const char *code =
+        "function add3(...)\n"
+        "  local a,b,c = ...\n"
+        "  return a+b+c\n"
+        "end\n"
+        "return add3(10,20,12)";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(42 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_varargs_forwarding_runs_vm) {
+    /* g forwards its varargs to f; f returns the first two summed. */
+    const char *code =
+        "function f(a,b) return a+b end\n"
+        "function g(...) return f(...) end\n"
+        "return g(30,12)";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(42 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_varargs_missing_are_nil_runs_vm) {
+    /* Requesting more varargs than supplied yields nil for the extras. */
+    const char *code =
+        "function pick(...)\n"
+        "  local a,b,c = ...\n"
+        "  if (c == nil) return 99\n"
+        "  return 0\n"
+        "end\n"
+        "return pick(1,2)";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(99 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_varargs_return_single_runs_vm) {
+    const char *code =
+        "function pt(...) return ... end\n"
+        "local x = pt(42)\n"
+        "return x";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(42 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_varargs_return_spread_runs_vm) {
+    /* `return ...` propagates every vararg to the caller. */
+    const char *code =
+        "function passthru(...) return ... end\n"
+        "local x,y,z = passthru(7,14,21)\n"
+        "return x,y,z";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(7 << 16, vm.value_stack[0].value);
+    ASSERT_EQ(14 << 16, vm.value_stack[1].value);
+    ASSERT_EQ(21 << 16, vm.value_stack[2].value);
+    p8_free_program(prog);
+    PASS();
+}
+
 TEST(compile_lifecycle_slots_and_host_call_draw_pixels) {
     const char *code = "function _init() cls(1) end\nfunction _draw() pset(3,4,7) end";
     P8Program prog;

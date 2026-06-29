@@ -65,8 +65,8 @@ void main() {
     RUN_TEST(vm_call_lua_pads_requested_results);
     RUN_TEST(vm_call_lua_truncates_extra_results);
     RUN_TEST(vm_call_lua_want_all_returns_actual_count);
-    RUN_TEST(vm_call_lua_vararg_args_traps);
-    RUN_TEST(vm_return_vararg_traps_in_lua_frame);
+    RUN_TEST(vm_call_lua_args_to_top);
+    RUN_TEST(vm_return_all_values_from_lua_frame);
     RUN_TEST(vm_call_lua_depth_overflow_traps);
     RUN_TEST(vm_call_requires_cfunc);
     RUN_TEST(vm_tailcall_lua_reuses_frame_and_returns_sum);

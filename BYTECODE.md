@@ -242,7 +242,28 @@ after TFORCALL, the first returned value is in R[A+3]. TFORLOOP checks if it's n
 | CLOSURE  | 0x50 | A, Bx     | `R[A] = new Closure(prototypes[Bx])`           |
 | CALL     | 0x51 | A, B, C   | call `R[A]` with B-1 args, want C-1 returns    |
 | TAILCALL | 0x52 | A, B      | tail-call `R[A]` with B-1 args; reuses frame   |
-| RETURN   | 0x53 | A, B      | return `R[A..A+B-2]` (B-1 values)              |
+| RETURN   | 0x53 | A, B      | return `R[A..A+B-2]` (B-1 values); B=0 = all   |
+| VARARG   | 0x54 | A, B      | copy frame varargs into `R[A..]`               |
+
+#### varargs
+
+a function prototype whose `flags` has `P386_PROTO_FLAG_VARARG` (0x02) collects
+the arguments beyond its `n_params` named parameters into a per-frame **vararg
+window**. the VM keeps a dedicated `vararg_stack` plus `vararg_base`/
+`vararg_count`/`vararg_sp` cursors; on a Lua call into a vararg proto the extra
+args are copied there, and the caller's window is saved in the CallFrame and
+restored on RETURN. (the named params still land in `R[0..n_params-1]` as
+usual.)
+
+`VARARG A B` copies from the current frame's window into registers starting at
+`R[A]`:
+- `B == 0`: copy all `vararg_count` values and set `top = &R[A+count]` (so a
+  following CALL/RETURN with its own B=0/C=0 spreads them).
+- `B  > 0`: copy `B-1` values, nil-padding when fewer varargs are available.
+
+the compiler emits `VARARG A 2` for a single-value `...`, `VARARG A 0` when `...`
+is the final element of a call's argument list or of a `return`, and
+`VARARG A n+1` to fill exactly `n` slots in a fixed multiple-assignment.
 
 #### CALL semantics
 
@@ -309,6 +330,9 @@ typedef struct {
     uint8_t         return_reg;    // where to write returns in caller
     uint8_t         want_rets;     // how many rets caller wants (0 = all)
     uint8_t         _padding[2];
+    uint32_t        saved_vararg_base;   // caller's vararg window, restored
+    uint32_t        saved_vararg_count;  //   when this frame returns
+    uint32_t        saved_vararg_sp;
 } CallFrame;
 
 #define CALL_STACK_DEPTH 256

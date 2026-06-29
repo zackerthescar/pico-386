@@ -16,3 +16,4 @@ rust/target/
 # External PICO-8 cart cache (downloaded by script/fetch_carts.sh)
 cache/
 *.p8.png
+__pycache__/

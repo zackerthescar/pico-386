@@ -140,6 +140,8 @@ dispatch_table:
     dd op_tailcall
 %elif i = 0x53
     dd op_return
+%elif i = 0x54
+    dd op_vararg
 %else
     dd op_unimpl
 %endif
@@ -149,7 +151,7 @@ dispatch_table:
 section .bss
 align 4
 dest_tmp resd 1
-scratch_a resd 4
+scratch_a resd 8
 
 extern _p8_ram
 
@@ -1260,6 +1262,58 @@ op_tailcall:
     ja   err_bounds
     mov  [edi + VM_TOP], eax
 
+    ; Tail-call varargs: the current frame is discarded, so first reclaim its
+    ; vararg window (vararg_sp := vararg_base), then collect this call's extra
+    ; args (nargs - n_params) into a fresh window. The frame's saved_vararg_*
+    ; (set when this frame was entered) is untouched, so the eventual return
+    ; still restores the caller-of-caller's window. The copy reads the args
+    ; from value_stack and writes to the separate vararg_stack (no overlap with
+    ; the down-copy below).
+    mov  eax, [edi + VM_VARARG_BASE]
+    mov  [edi + VM_VARARG_SP], eax          ; reclaim current frame's varargs
+    mov  [edi + VM_VARARG_BASE], eax
+    mov  dword [edi + VM_VARARG_COUNT], 0
+    test byte [ebx + PE_FLAGS], P386_PROTO_FLAG_VARARG
+    jz   .tc_va_done
+    mov  eax, [scratch_a + 4]               ; nargs
+    movzx edx, byte [ebx + PE_N_PARAMS]
+    sub  eax, edx
+    jle  .tc_va_done                        ; no extra args
+    mov  ecx, [edi + VM_VARARG_SP]
+    mov  edx, ecx
+    add  edx, eax
+    cmp  edx, P386_VARARG_STACK_SLOTS
+    jbe  .tc_va_count_ok
+    mov  eax, P386_VARARG_STACK_SLOTS
+    sub  eax, ecx
+    jle  .tc_va_done
+.tc_va_count_ok:
+    mov  [scratch_a + 16], eax              ; nextra
+    movzx edx, byte [ebx + PE_N_PARAMS]
+    mov  esi, [scratch_a + 12]              ; &caller R[A+1]
+    lea  esi, [esi + edx*8]                  ; skip named params
+    lea  edx, [edi + VM_VARARG_STACK]
+    mov  ecx, [edi + VM_VARARG_SP]
+    lea  edx, [edx + ecx*8]
+    xor  ecx, ecx
+.tc_va_copy:
+    cmp  ecx, [scratch_a + 16]
+    jae  .tc_va_store
+    mov  eax, [esi + ecx*8]
+    mov  [edx + ecx*8], eax
+    mov  eax, [esi + ecx*8 + 4]
+    mov  [edx + ecx*8 + 4], eax
+    inc  ecx
+    jmp  .tc_va_copy
+.tc_va_store:
+    mov  eax, [edi + VM_VARARG_SP]
+    mov  [edi + VM_VARARG_BASE], eax
+    mov  ecx, [scratch_a + 16]
+    mov  [edi + VM_VARARG_COUNT], ecx
+    add  eax, ecx
+    mov  [edi + VM_VARARG_SP], eax
+.tc_va_done:
+
     ; copy min(nargs, n_params) args down to R0.. before clearing
     mov  edx, [scratch_a + 4]
     movzx eax, byte [ebx + PE_N_PARAMS]
@@ -1394,20 +1448,29 @@ op_call:
     test ebx, ebx
     jz   err_type_func
 
-    movzx eax, dl                  ; B = nargs + 1 (0 => variable, unsupported => 0)
+    ; Resolve want_rets first (frees dh for nargs computation below).
+    movzx eax, dh                  ; C = want_rets + 1 (0 => all)
+    test eax, eax
+    jz   .lua_c_ready
+    dec  eax
+.lua_c_ready:
+    mov  [scratch_a + 8], eax      ; want_rets (0 => all)
+
+    movzx eax, dl                  ; B = nargs + 1 (0 => args extend to top)
     test eax, eax
     jnz  .lua_fixed_args
-    jmp  err_vararg
+    ; B == 0: nargs = (top - &R[A+1]) / 8
+    mov  eax, [edi + VM_TOP]
+    lea  edx, [ebp + ecx*8 + 8]
+    sub  eax, edx
+    sar  eax, 3
+    jns  .lua_nargs_ready
+    xor  eax, eax
+    jmp  .lua_nargs_ready
 .lua_fixed_args:
     dec  eax                       ; nargs
-.lua_args_ready:
+.lua_nargs_ready:
     mov  [scratch_a + 4], eax      ; nargs
-    movzx edx, dh                  ; C = want_rets + 1 (0 => all)
-    test edx, edx
-    jz   .lua_want_ready
-    dec  edx
-.lua_want_ready:
-    mov  [scratch_a + 8], edx      ; want_rets (0 => all)
     mov  [scratch_a], ecx          ; caller A
 
     cmp  dword [edi + VM_CALL_DEPTH], CALL_STACK_DEPTH
@@ -1425,6 +1488,13 @@ op_call:
     mov  [eax + FRAME_RETURN_REG], dl
     mov  edx, [scratch_a + 8]
     mov  [eax + FRAME_WANT_RETS], dl
+    ; Save caller's vararg window so it can be restored on return.
+    mov  edx, [edi + VM_VARARG_BASE]
+    mov  [eax + FRAME_SAVED_VARARG_BASE], edx
+    mov  edx, [edi + VM_VARARG_COUNT]
+    mov  [eax + FRAME_SAVED_VARARG_COUNT], edx
+    mov  edx, [edi + VM_VARARG_SP]
+    mov  [eax + FRAME_SAVED_VARARG_SP], edx
     inc  dword [edi + VM_CALL_DEPTH]
 
     mov  ecx, [scratch_a]          ; caller A
@@ -1467,13 +1537,63 @@ op_call:
     mov  eax, [scratch_a + 12]
 .lua_arg_loop:
     cmp  ecx, edx
-    jae  .lua_enter
+    jae  .lua_setup_varargs
     mov  esi, [eax + ecx*8]
     mov  [ebp + ecx*8], esi
     mov  esi, [eax + ecx*8 + 4]
     mov  [ebp + ecx*8 + 4], esi
     inc  ecx
     jmp  .lua_arg_loop
+
+.lua_setup_varargs:
+    ; Default: empty vararg window anchored at current sp.
+    mov  eax, [edi + VM_VARARG_SP]
+    mov  [edi + VM_VARARG_BASE], eax
+    mov  dword [edi + VM_VARARG_COUNT], 0
+    ; Only vararg protos collect extra args.
+    test byte [ebx + PE_FLAGS], P386_PROTO_FLAG_VARARG
+    jz   .lua_enter
+    ; nextra = nargs - n_params (clamped at 0)
+    mov  eax, [scratch_a + 4]      ; nargs
+    movzx edx, byte [ebx + PE_N_PARAMS]
+    sub  eax, edx
+    jle  .lua_enter                ; <=0: no extra args
+    ; clamp nextra so vararg_sp + nextra <= P386_VARARG_STACK_SLOTS
+    mov  ecx, [edi + VM_VARARG_SP]
+    mov  edx, ecx
+    add  edx, eax
+    cmp  edx, P386_VARARG_STACK_SLOTS
+    jbe  .lua_va_count_ok
+    mov  eax, P386_VARARG_STACK_SLOTS
+    sub  eax, ecx                  ; available slots
+    jle  .lua_enter
+.lua_va_count_ok:
+    mov  [scratch_a + 16], eax     ; nextra
+    ; source = caller first-arg window + n_params
+    movzx edx, byte [ebx + PE_N_PARAMS]
+    mov  esi, [scratch_a + 12]     ; &caller R[A+1]
+    lea  esi, [esi + edx*8]        ; skip named params
+    ; dest = &vararg_stack[vararg_sp]
+    lea  edx, [edi + VM_VARARG_STACK]
+    mov  ecx, [edi + VM_VARARG_SP]
+    lea  edx, [edx + ecx*8]
+    xor  ecx, ecx
+.lua_va_copy:
+    cmp  ecx, [scratch_a + 16]
+    jae  .lua_va_done
+    mov  eax, [esi + ecx*8]
+    mov  [edx + ecx*8], eax
+    mov  eax, [esi + ecx*8 + 4]
+    mov  [edx + ecx*8 + 4], eax
+    inc  ecx
+    jmp  .lua_va_copy
+.lua_va_done:
+    mov  eax, [edi + VM_VARARG_SP]
+    mov  [edi + VM_VARARG_BASE], eax
+    mov  ecx, [scratch_a + 16]     ; nextra
+    mov  [edi + VM_VARARG_COUNT], ecx
+    add  eax, ecx
+    mov  [edi + VM_VARARG_SP], eax
 
 .lua_enter:
     mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
@@ -1483,9 +1603,18 @@ op_call:
 op_return:
     movzx ecx, ah                  ; A
     shr  eax, 16
-    movzx edx, al                  ; B = nrets + 1, 0 = all
+    movzx edx, al                  ; B = nrets + 1, 0 = all values up to top
     test edx, edx
-    jz   err_vararg
+    jnz  .return_fixed
+    ; B == 0: nrets = (top - &R[A]) / 8
+    mov  edx, [edi + VM_TOP]
+    lea  eax, [ebp + ecx*8]
+    sub  edx, eax
+    sar  edx, 3
+    jns  .count_ready
+    xor  edx, edx
+    jmp  .count_ready
+.return_fixed:
     dec  edx
 .count_ready:
     cmp  dword [edi + VM_CALL_DEPTH], 0
@@ -1510,20 +1639,28 @@ op_return:
     mov  [edi + VM_CURRENT_CLOSURE], ebx
     mov  ebp, [eax + FRAME_RETURN_BASE]
     mov  [edi + VM_BASE], ebp
+    ; Restore caller's vararg window.
+    mov  edx, [eax + FRAME_SAVED_VARARG_BASE]
+    mov  [edi + VM_VARARG_BASE], edx
+    mov  edx, [eax + FRAME_SAVED_VARARG_COUNT]
+    mov  [edi + VM_VARARG_COUNT], edx
+    mov  edx, [eax + FRAME_SAVED_VARARG_SP]
+    mov  [edi + VM_VARARG_SP], edx
     movzx ecx, byte [eax + FRAME_RETURN_REG]
     movzx edx, byte [eax + FRAME_WANT_RETS]
-    mov  ebx, [scratch_a + 4]      ; actual return count
+    ; scratch_a+4 already holds the actual return count; keep it in memory so
+    ; the copy body is free to clobber ebx for the value being moved.
     mov  eax, edx                  ; wanted fixed count, 0 => all actual
     test eax, eax
     jnz  .lua_ret_copy_fixed
-    mov  eax, ebx
+    mov  eax, [scratch_a + 4]      ; want all -> ncopy = actual count
 .lua_ret_copy_fixed:
     push eax                       ; ncopy/result slots requested
     xor  edx, edx
 .lua_ret_copy_loop:
     cmp  edx, eax
     jae  .lua_ret_copy_done
-    cmp  edx, ebx
+    cmp  edx, [scratch_a + 4]      ; i >= actual? -> pad with nil
     jae  .lua_ret_pad_nil
     push eax
     mov  eax, [scratch_a]
@@ -1554,6 +1691,59 @@ op_return:
 .lua_ret_copy_done:
     pop  eax
     add  eax, ecx
+    lea  edx, [ebp + eax*8]
+    mov  [edi + VM_TOP], edx
+    jmp  dispatch_next
+
+; VARARG A B: copy the current frame's varargs into R[A..].
+;   B == 0 : copy all `vararg_count` values, set top = &R[A+count].
+;   B  > 0 : copy B-1 values, nil-padding when fewer varargs are available.
+op_vararg:
+    movzx ecx, ah                  ; A (destination register)
+    shr  eax, 16
+    movzx edx, al                  ; B
+    test edx, edx
+    jnz  .va_fixed
+    ; want all: nwant = vararg_count
+    mov  edx, [edi + VM_VARARG_COUNT]
+    jmp  .va_have_count
+.va_fixed:
+    dec  edx                       ; nwant = B-1
+.va_have_count:
+    mov  [scratch_a], ecx          ; dest reg A
+    mov  [scratch_a + 4], edx      ; nwant
+    ; source = &vararg_stack[vararg_base]
+    lea  ebx, [edi + VM_VARARG_STACK]
+    mov  eax, [edi + VM_VARARG_BASE]
+    lea  ebx, [ebx + eax*8]        ; ebx = &varargs[0]
+    mov  [scratch_a + 8], ebx
+    xor  eax, eax                  ; i
+.va_loop:
+    cmp  eax, [scratch_a + 4]
+    jae  .va_done
+    mov  ecx, [scratch_a]
+    add  ecx, eax                  ; dest reg index A+i
+    cmp  eax, [edi + VM_VARARG_COUNT]
+    jae  .va_pad
+    mov  ebx, [scratch_a + 8]
+    mov  edx, [ebx + eax*8]
+    mov  [ebp + ecx*8], edx
+    mov  edx, [ebx + eax*8 + 4]
+    mov  [ebp + ecx*8 + 4], edx
+    jmp  .va_next
+.va_pad:
+    mov  dword [ebp + ecx*8], 0
+    mov  dword [ebp + ecx*8 + 4], TAG_NIL
+.va_next:
+    inc  eax
+    jmp  .va_loop
+.va_done:
+    ; Publish top = &R[A + nwant]. In the want-all (B==0) case this lets a
+    ; following CALL/RETURN consume the spread values via its own B==0 path;
+    ; in the fixed case the next instruction overwrites top as needed, so this
+    ; is harmless.
+    mov  eax, [scratch_a]
+    add  eax, [scratch_a + 4]
     lea  edx, [ebp + eax*8]
     mov  [edi + VM_TOP], edx
     jmp  dispatch_next

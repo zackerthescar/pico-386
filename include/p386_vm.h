@@ -8,6 +8,7 @@
 
 #define P386_VALUE_STACK_SLOTS 4096
 #define P386_CALL_STACK_DEPTH  256
+#define P386_VARARG_STACK_SLOTS 256
 
 #define P386_VM_OK          0
 #define P386_VM_HALTED      1
@@ -35,6 +36,10 @@ typedef struct P386CallFrame {
     uint8_t return_reg;
     uint8_t want_rets;
     uint8_t padding[2];
+    /* Caller's vararg window, restored when this frame returns. */
+    uint32_t saved_vararg_base;
+    uint32_t saved_vararg_count;
+    uint32_t saved_vararg_sp;
 } P386CallFrame;
 #pragma pack(pop)
 
@@ -55,6 +60,13 @@ typedef struct P386VMState {
     uint32_t open_upvalues;
     P386CallFrame call_stack[P386_CALL_STACK_DEPTH];
     uint32_t call_depth;
+    /* Varargs: each Lua frame that declares `...` owns a contiguous window
+     * [vararg_base, vararg_base+vararg_count) inside vararg_stack. New windows
+     * are pushed at vararg_sp. The VARARG opcode copies from this window. */
+    uint32_t vararg_base;
+    uint32_t vararg_count;
+    uint32_t vararg_sp;
+    P386Value vararg_stack[P386_VARARG_STACK_SLOTS];
 } P386VMState;
 #pragma pack(pop)
 

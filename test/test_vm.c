@@ -1345,41 +1345,61 @@ TEST(vm_call_lua_want_all_returns_actual_count) {
     PASS();
 }
 
-TEST(vm_call_lua_vararg_args_traps) {
+TEST(vm_call_lua_args_to_top) {
+    /* CALL with B=0 takes arguments up to `top`. The fixture starts the main
+     * frame with top = base + n_regs (= &R[4]); after loading the callee in
+     * R0 and two args in R1,R2, the B=0 call sees nargs = (top-&R1)/8 = 3.
+     * The 2-param callee binds the first two (10, 20) and sums them. */
     VmFixture f;
     P386VMState vm;
+    P386Value main_consts[] = {
+        { P386_FP_INT(10), P386_TAG_NUM },
+        { P386_FP_INT(20), P386_TAG_NUM }
+    };
     unsigned long main_code[] = {
         P386_ABX(P386_OP_CLOSURE, 0, 1),
-        P386_ABC(P386_OP_CALL, 0, 0, 1),
-        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+        P386_ABX(P386_OP_LOADK, 1, 0),
+        P386_ABX(P386_OP_LOADK, 2, 1),
+        P386_ABC(P386_OP_CALL, 0, 0, 2),   /* B=0: args extend to top */
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
     };
     unsigned long child_code[] = {
-        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+        P386_ABC(P386_OP_ADD, 2, P386_RK_REG(0), P386_RK_REG(1)),
+        P386_ABC(P386_OP_RETURN, 2, 2, 0)
     };
-
-    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_two_proto_fixture(&f, &vm,
-        main_code, 3, 0, 0, 4,
-        child_code, 1, 0, 0, 0, 1));
-    ASSERT_STR_EQ("variable call/return not implemented", vm.error_msg);
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 5, main_consts, 2, 4,
+        child_code, 2, 0, 0, 2, 4));
+    ASSERT_NUM(vm, 0, P386_FP_INT(30));
     PASS();
 }
 
-TEST(vm_return_vararg_traps_in_lua_frame) {
+TEST(vm_return_all_values_from_lua_frame) {
+    /* RETURN with B=0 returns every value from R[A] up to `top`. The child has
+     * n_regs=2, so the fixture starts it with top = &R[2]; after loading two
+     * values the B=0 return propagates exactly those two. The caller asks for
+     * all results (CALL C=0) and re-returns them. */
     VmFixture f;
     P386VMState vm;
+    P386Value child_consts[] = {
+        { P386_FP_INT(5), P386_TAG_NUM },
+        { P386_FP_INT(6), P386_TAG_NUM }
+    };
     unsigned long main_code[] = {
         P386_ABX(P386_OP_CLOSURE, 0, 1),
-        P386_ABC(P386_OP_CALL, 0, 1, 1),
-        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+        P386_ABC(P386_OP_CALL, 0, 1, 0),   /* want all results */
+        P386_ABC(P386_OP_RETURN, 0, 3, 0)  /* return the two results */
     };
     unsigned long child_code[] = {
-        P386_ABC(P386_OP_RETURN, 0, 0, 0)
+        P386_ABX(P386_OP_LOADK, 0, 0),
+        P386_ABX(P386_OP_LOADK, 1, 1),
+        P386_ABC(P386_OP_RETURN, 0, 0, 0)  /* B=0: return all up to top */
     };
-
-    ASSERT_EQ(P386_VM_ERR_UNIMPL, run_two_proto_fixture(&f, &vm,
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
         main_code, 3, 0, 0, 4,
-        child_code, 1, 0, 0, 0, 1));
-    ASSERT_STR_EQ("variable call/return not implemented", vm.error_msg);
+        child_code, 3, child_consts, 2, 0, 2));
+    ASSERT_NUM(vm, 0, P386_FP_INT(5));
+    ASSERT_NUM(vm, 1, P386_FP_INT(6));
     PASS();
 }
 

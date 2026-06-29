@@ -62,6 +62,7 @@ fn opname(op: u8) -> &'static str {
         P386_OP_CALL => "CALL",
         P386_OP_TAILCALL => "TAILCALL",
         P386_OP_RETURN => "RETURN",
+        P386_OP_VARARG => "VARARG",
         _ => "???",
     }
 }
@@ -71,8 +72,9 @@ fn rk(x: u8) -> String {
 }
 
 pub fn disasm_proto(p: &FuncProto, name: &str, out: &mut String) {
-    out.push_str(&format!("=== {} (regs={}, params={}, upvals={}, consts={}, protos={}) ===\n",
-        name, p.n_regs, p.n_params, p.upvalues.len(), p.constants.len(), p.prototypes.len()));
+    out.push_str(&format!("=== {} (regs={}, params={}{}, upvals={}, consts={}, protos={}) ===\n",
+        name, p.n_regs, p.n_params, if p.is_vararg { "+..." } else { "" },
+        p.upvalues.len(), p.constants.len(), p.prototypes.len()));
     for (i, u) in p.upvalues.iter().enumerate() {
         out.push_str(&format!("  upval[{}] = {} {}\n", i,
             if u.0 == 0 { "parent-local" } else { "parent-upval" }, u.1));
@@ -116,6 +118,7 @@ pub fn disasm_proto(p: &FuncProto, name: &str, out: &mut String) {
             P386_OP_TFORCALL => format!("R{}, C={}", a, bx),
             P386_OP_CALL => format!("R{}, b={}, c={}", a, b, c),
             P386_OP_TAILCALL | P386_OP_RETURN => format!("R{}, b={}", a, b),
+            P386_OP_VARARG => format!("R{}, b={}", a, b),
             _ => format!("a={} b={} c={}", a, b, c),
         };
         out.push_str(&format!("  {:4}  {:<10} {}\n", pc, opname(op), txt));

@@ -118,6 +118,7 @@ impl Compiler {
             fs.upvalues,
             fs.max_reg.saturating_add(1).max(1),
             fs.n_params,
+            fs.has_vararg,
         ))
     }
 
@@ -667,10 +668,38 @@ impl Compiler {
                 return;
             }
         }
-        // Evaluate the return values into a fresh contiguous block, then shift
-        // them down to R0.. so the return base is always register 0. This
-        // matches the VM's halt convention (return values observable at the
-        // frame base) and keeps nested-call relocation correct.
+        // Variable-length return: when the final value spreads (a call or
+        // `...`), lay the values out contiguously and RETURN B=0 (all values
+        // up to `top`). We cannot shift to R0 because the count is dynamic.
+        let last = values.len() - 1;
+        let last_spreads = matches!(
+            &values[last],
+            Expr::Call(_) | Expr::MethodCall(_) | Expr::Varargs
+        );
+        if last_spreads {
+            let base = self.freereg();
+            for (i, e) in values.iter().enumerate() {
+                let dst = base + i as u8;
+                self.fs_mut().freereg = dst;
+                if i == last {
+                    match e {
+                        Expr::Call(c) => { self.compile_call_open(c, dst); }
+                        Expr::MethodCall(mc) => { self.compile_method_call_open(mc, dst); }
+                        Expr::Varargs => { self.emit(abc(P386_OP_VARARG, dst, 0, 0)); }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    self.compile_expr_into(e, dst);
+                    self.fs_mut().freereg = dst + 1;
+                }
+            }
+            self.emit(abc(P386_OP_RETURN, base, 0, 0));
+            return;
+        }
+        // Fixed return: evaluate into a contiguous block, then shift down to
+        // R0.. so the return base is always register 0. This matches the VM's
+        // halt convention (return values observable at the frame base) and
+        // keeps nested-call relocation correct.
         let base = self.freereg();
         let n = values.len().min(250) as u8;
         self.compile_expr_list(values, base, n);
@@ -762,6 +791,7 @@ impl Compiler {
             fs.upvalues,
             fs.max_reg.saturating_add(1).max(1),
             fs.n_params,
+            fs.has_vararg,
         );
         let parent = self.fs_mut();
         if failed {
@@ -916,6 +946,11 @@ impl Compiler {
                         self.compile_method_call_open(mc, dst);
                         return ArgCount::Open;
                     }
+                    Expr::Varargs => {
+                        // Spread all varargs: VARARG dst, 0 sets top past them.
+                        self.emit(abc(P386_OP_VARARG, dst, 0, 0));
+                        return ArgCount::Open;
+                    }
                     _ => {}
                 }
             }
@@ -974,6 +1009,10 @@ impl Compiler {
             }
             Expr::MethodCall(mc) => {
                 self.compile_method_call(mc, want, base);
+            }
+            Expr::Varargs => {
+                // VARARG base, want+1 fills exactly `want` slots (nil-padded).
+                self.emit(abc(P386_OP_VARARG, base, want.saturating_add(1), 0));
             }
             _ => {
                 self.compile_expr_into(e, base);
@@ -1050,8 +1089,8 @@ impl Compiler {
                 self.emit(abx(P386_OP_CLOSURE, dst, idx));
             }
             Expr::Varargs => {
-                // No VARARG opcode; yield nil.
-                self.emit(abc(P386_OP_LOADN, dst, 1, 0));
+                // Single-value context: take exactly the first vararg.
+                self.emit(abc(P386_OP_VARARG, dst, 2, 0));
             }
         };
         dst

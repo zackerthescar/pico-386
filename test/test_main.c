@@ -60,6 +60,12 @@ void main() {
     RUN_TEST(compile_constant_overflow_returns_null);
     RUN_TEST(compile_branch_local_scope_does_not_leak);
     RUN_TEST(compile_lua_function_call_runs_vm);
+    RUN_TEST(compile_multi_return_three_values_runs_vm);
+    RUN_TEST(compile_varargs_sum_runs_vm);
+    RUN_TEST(compile_varargs_forwarding_runs_vm);
+    RUN_TEST(compile_varargs_missing_are_nil_runs_vm);
+    RUN_TEST(compile_varargs_return_single_runs_vm);
+    RUN_TEST(compile_varargs_return_spread_runs_vm);
     RUN_TEST(compile_local_function_call_runs_vm);
     RUN_TEST(compile_function_literal_call_runs_vm);
     RUN_TEST(compile_nested_noncapturing_function_call_runs_vm);

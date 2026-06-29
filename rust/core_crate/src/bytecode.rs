@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 pub const P386_BC_MAGIC: u32 = 0x3638_3350;
 pub const P386_BC_VERSION: u32 = 1;
 pub const P386_PROTO_FLAG_MAIN: u8 = 0x01;
+pub const P386_PROTO_FLAG_VARARG: u8 = 0x02;
 
 pub const P386_TAG_NIL: u32 = 0;
 pub const P386_TAG_BOOL: u32 = 1;
@@ -63,6 +64,7 @@ pub const P386_OP_CLOSURE: u8 = 0x50;
 pub const P386_OP_CALL: u8 = 0x51;
 pub const P386_OP_TAILCALL: u8 = 0x52;
 pub const P386_OP_RETURN: u8 = 0x53;
+pub const P386_OP_VARARG: u8 = 0x54;
 
 pub const P386_BUILTIN_PRINT: u8 = 0;
 pub const P386_BUILTIN_CLS: u8 = 1;
@@ -110,13 +112,14 @@ pub struct FuncProto {
     pub upvalues: Vec<(u8, u8)>,
     pub n_regs: u8,
     pub n_params: u8,
+    pub is_vararg: bool,
 }
 
 impl FuncProto {
-    pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, upvalues: Vec<(u8, u8)>, n_regs: u8, n_params: u8) -> Self {
+    pub fn new(instructions: Vec<u32>, constants: Vec<Constant>, prototypes: Vec<FuncProto>, upvalues: Vec<(u8, u8)>, n_regs: u8, n_params: u8, is_vararg: bool) -> Self {
         let proto_count = count_protos(&prototypes);
-        let code = emit_program(&instructions, &constants, &prototypes, &upvalues, n_regs, n_params);
-        Self { code, proto_count, constants, prototypes, instructions, upvalues, n_regs, n_params }
+        let code = emit_program(&instructions, &constants, &prototypes, &upvalues, n_regs, n_params, is_vararg);
+        Self { code, proto_count, constants, prototypes, instructions, upvalues, n_regs, n_params, is_vararg }
     }
 }
 
@@ -196,24 +199,25 @@ struct FlatProto<'a> {
     upvalues: &'a [(u8, u8)],
     regs: u8,
     params: u8,
+    is_vararg: bool,
 }
 
-fn flatten_protos<'a>(root: (&'a [u32], &'a [Constant], &'a [(u8, u8)], u8, u8, &'a [FuncProto]), out: &mut Vec<FlatProto<'a>>) {
+fn flatten_protos<'a>(root: (&'a [u32], &'a [Constant], &'a [(u8, u8)], u8, u8, bool, &'a [FuncProto]), out: &mut Vec<FlatProto<'a>>) {
     let root_index = out.len() as u16;
     let child_base = root_index.saturating_add(1);
-    let (insns, consts, upvalues, regs, params, children) = root;
+    let (insns, consts, upvalues, regs, params, is_vararg, children) = root;
     let rewritten = rewrite_nested_closure_indices(insns, child_base, children);
-    out.push(FlatProto { insns: rewritten, consts, upvalues, regs, params });
+    out.push(FlatProto { insns: rewritten, consts, upvalues, regs, params, is_vararg });
     for p in children {
-        flatten_protos((&p.instructions, &p.constants, &p.upvalues, p.n_regs, p.n_params, &p.prototypes), out);
+        flatten_protos((&p.instructions, &p.constants, &p.upvalues, p.n_regs, p.n_params, p.is_vararg, &p.prototypes), out);
     }
 }
 
-pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[FuncProto], upvalues: &[(u8, u8)], n_regs: u8, n_params: u8) -> Vec<u8> {
+pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[FuncProto], upvalues: &[(u8, u8)], n_regs: u8, n_params: u8, is_vararg: bool) -> Vec<u8> {
     let mut strings = Vec::new();
     collect_all_strings(constants, prototypes, &mut strings);
     let mut protos = Vec::new();
-    flatten_protos((instructions, constants, upvalues, n_regs, n_params, prototypes), &mut protos);
+    flatten_protos((instructions, constants, upvalues, n_regs, n_params, is_vararg, prototypes), &mut protos);
     let n_protos = protos.len() as u32;
     let n_strings = strings.len() as u32;
 
@@ -281,7 +285,9 @@ pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[
         out[patch + 17] = fp.params;
         out[patch + 18] = fp.regs.max(1);
         out[patch + 19] = fp.upvalues.len().min(255) as u8;
-        out[patch + 20] = if pi == 0 { P386_PROTO_FLAG_MAIN } else { 0 };
+        let mut flags = if pi == 0 { P386_PROTO_FLAG_MAIN } else { 0 };
+        if fp.is_vararg { flags |= P386_PROTO_FLAG_VARARG; }
+        out[patch + 20] = flags;
     }
 
     for (i, s) in strings.iter().enumerate() {
