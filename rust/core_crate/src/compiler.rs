@@ -6,6 +6,13 @@ use crate::bytecode::*;
 
 const MAX_REG: u8 = 250;
 
+/// Result of laying out call arguments. `Open` means the final argument was a
+/// call whose returns spread to `top`, so the enclosing CALL must use B=0.
+enum ArgCount {
+    Fixed(u8),
+    Open,
+}
+
 #[derive(Clone, Copy)]
 struct Local {
     name: Name,
@@ -799,17 +806,52 @@ impl Compiler {
         let func = self.reserve();
         debug_assert_eq!(func, base);
         self.compile_expr_into(&call.func, func);
-        let nargs = self.compile_args(&call.args, func + 1);
+        // B operand: nargs+1, or 0 when the final argument expands to a variable
+        // number of values (a nested call / vararg) so args extend to `top`.
+        let b = match self.compile_args(&call.args, func + 1) {
+            ArgCount::Fixed(n) => n.saturating_add(1),
+            ArgCount::Open => 0,
+        };
         if tail {
-            self.emit(abc(P386_OP_TAILCALL, func, nargs.saturating_add(1), 0));
+            self.emit(abc(P386_OP_TAILCALL, func, b, 0));
         } else {
-            self.emit(abc(P386_OP_CALL, func, nargs.saturating_add(1), want_rets.saturating_add(1)));
+            self.emit(abc(P386_OP_CALL, func, b, want_rets.saturating_add(1)));
         }
         if want_rets > 0 {
             self.note_reg(base + want_rets - 1);
         }
         self.set_freereg(base + want_rets.max(1));
         base
+    }
+
+    /// Compile a call requesting *all* returns (CALL with C=0), leaving `top`
+    /// set just past the last result. Used when a call is the final argument
+    /// of another call or the final value of a multi-return list.
+    fn compile_call_open(&mut self, call: &CallExpr, base: u8) {
+        self.fs_mut().freereg = base;
+        let func = self.reserve();
+        self.compile_expr_into(&call.func, func);
+        let b = match self.compile_args(&call.args, func + 1) {
+            ArgCount::Fixed(n) => n.saturating_add(1),
+            ArgCount::Open => 0,
+        };
+        self.emit(abc(P386_OP_CALL, func, b, 0));
+        self.set_freereg(base);
+    }
+
+    fn compile_method_call_open(&mut self, call: &MethodCallExpr, base: u8) {
+        self.fs_mut().freereg = base;
+        let func = self.reserve();
+        let self_reg = self.reserve();
+        self.compile_expr_into(&call.object, self_reg);
+        let method = self.add_name_const(call.method);
+        self.emit(abc(P386_OP_GETFIELD, func, self_reg, method));
+        let b = match self.compile_args(&call.args, self_reg + 1) {
+            ArgCount::Fixed(n) => n.saturating_add(2),
+            ArgCount::Open => 0,
+        };
+        self.emit(abc(P386_OP_CALL, func, b, 0));
+        self.set_freereg(base);
     }
 
     fn compile_method_call(&mut self, call: &MethodCallExpr, want_rets: u8, base: u8) -> u8 {
@@ -834,11 +876,14 @@ impl Compiler {
         let method = self.add_name_const(call.method);
         self.emit(abc(P386_OP_GETFIELD, func, self_reg, method));
         // self is the first argument; remaining args follow
-        let nargs = self.compile_args(&call.args, self_reg + 1).saturating_add(1);
+        let b = match self.compile_args(&call.args, self_reg + 1) {
+            ArgCount::Fixed(n) => n.saturating_add(2),
+            ArgCount::Open => 0,
+        };
         if tail {
-            self.emit(abc(P386_OP_TAILCALL, func, nargs.saturating_add(1), 0));
+            self.emit(abc(P386_OP_TAILCALL, func, b, 0));
         } else {
-            self.emit(abc(P386_OP_CALL, func, nargs.saturating_add(1), want_rets.saturating_add(1)));
+            self.emit(abc(P386_OP_CALL, func, b, want_rets.saturating_add(1)));
         }
         if want_rets > 0 {
             self.note_reg(base + want_rets - 1);
@@ -848,17 +893,36 @@ impl Compiler {
     }
 
     /// Compile argument expressions into consecutive registers starting at
-    /// `start`. Returns the argument count.
-    fn compile_args(&mut self, args: &[Expr], start: u8) -> u8 {
+    /// `start`. If the final argument is a call (or method call) its results
+    /// are spread via CALL C=0, and `ArgCount::Open` is returned so the caller
+    /// emits B=0 (args extend to `top`). Otherwise returns `ArgCount::Fixed`.
+    fn compile_args(&mut self, args: &[Expr], start: u8) -> ArgCount {
         self.fs_mut().freereg = start;
-        let n = args.len().min(248) as u8;
-        for (i, e) in args.iter().take(248).enumerate() {
+        if args.is_empty() {
+            return ArgCount::Fixed(0);
+        }
+        let n = args.len().min(248);
+        let last = n - 1;
+        for (i, e) in args.iter().take(n).enumerate() {
             let dst = start + i as u8;
             self.fs_mut().freereg = dst;
+            if i == last {
+                match e {
+                    Expr::Call(c) => {
+                        self.compile_call_open(c, dst);
+                        return ArgCount::Open;
+                    }
+                    Expr::MethodCall(mc) => {
+                        self.compile_method_call_open(mc, dst);
+                        return ArgCount::Open;
+                    }
+                    _ => {}
+                }
+            }
             self.compile_expr_into(e, dst);
             self.fs_mut().freereg = dst + 1;
         }
-        n
+        ArgCount::Fixed(n as u8)
     }
 
     /// Place `n` values from `exprs` into consecutive registers at `base`.
