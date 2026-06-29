@@ -31,6 +31,8 @@ void main() {
     RUN_TEST(parse_pico8_shorthand_if);
     RUN_TEST(parse_long_string_eq_level);
     RUN_TEST(parse_long_comment_eq_level);
+    RUN_TEST(parse_tilde_is_binary_xor);
+    RUN_TEST(parse_deeply_nested_tables_no_blowup);
     RUN_TEST(parse_short_if_stops_at_newline);
     RUN_TEST(parse_pico8_shorthand_print);
     RUN_TEST(parse_pico8_compound_assign);

@@ -166,6 +166,15 @@ pub enum Suffix {
     MethodCall(Name, Vec<Expr>),
 }
 
+/// What follows a prefix expression in a statement, deciding whether it is a
+/// compound assignment, a plain (possibly multi-target) assignment, or a bare
+/// call statement. Used only during parsing.
+pub enum StatTail {
+    Compound(CompoundOp, Box<Expr>),
+    Assign(Vec<Expr>, Vec<Expr>),
+    Call,
+}
+
 // ── Name interning ───────────────────────────────────────────────────
 
 const NT_BUCKETS: usize = 64;
@@ -451,5 +460,14 @@ pub fn apply_suffixes(base: Expr, suffixes: Vec<Suffix>) -> Expr {
 /// Helper: check if a suffix is a call (for distinguishing call statements from assignments)
 pub fn suffix_is_call(s: &Suffix) -> bool {
     matches!(s, Suffix::Call(_) | Suffix::MethodCall(_, _))
+}
+
+/// Convert a parsed prefix expression into an assignable l-value, if it is one.
+/// Returns None for calls/method-calls (which are not valid assignment targets).
+pub fn expr_to_var(e: Expr) -> Option<Var> {
+    match e {
+        Expr::Var(v) => Some(v),
+        _ => None,
+    }
 }
 

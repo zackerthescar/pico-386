@@ -52,6 +52,25 @@ TEST(parse_long_comment_eq_level) {
     PASS();
 }
 
+TEST(parse_tilde_is_binary_xor) {
+    /* PICO-8 accepts both ^^ and ~ as bitwise xor. */
+    const char *code = "a = 6 ~ 3\nb = 6 ^^ 3";
+    ASSERT_EQ(0, p8_parse_rs((const unsigned char *)code, strlen(code)));
+    PASS();
+}
+
+TEST(parse_deeply_nested_tables_no_blowup) {
+    /* Right-associative concat/pow rules previously re-parsed their left
+     * operand, giving exponential time on nested tables. This 12-deep table
+     * must compile quickly (it would hang the old parser). */
+    const char *code =
+        "t={{{{{{{{{{{{1}}}}}}}}}}}}";
+    P8Program prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    p8_free_program(prog);
+    PASS();
+}
+
 TEST(parse_short_if_stops_at_newline) {
     /* The single-line if body ends at the newline; the next line is a
      * separate statement (not part of the conditional). */

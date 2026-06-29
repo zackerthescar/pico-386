@@ -80,11 +80,15 @@ peg::parser! {
 
         // ── Identifiers ──────────────────────────────────────────────
 
+        // PICO-8 allows its special P8SCII glyphs (button symbols, emoji, etc.)
+        // inside identifiers. In a UTF-8 .p8 these decode to code points well
+        // above 0xff, so accept any non-ASCII scalar value (plus the 0x10-0x1f
+        // control range PICO-8 uses for glyphs).
         rule ident_first()
-            = ['a'..='z' | 'A'..='Z' | '_' | '\u{10}'..='\u{1f}' | '\u{7f}'..='\u{ff}']
+            = ['a'..='z' | 'A'..='Z' | '_' | '\u{10}'..='\u{1f}' | '\u{7f}'..='\u{10ffff}']
 
         rule ident_rest()
-            = ['a'..='z' | 'A'..='Z' | '_' | '0'..='9' | '\u{10}'..='\u{1f}' | '\u{7f}'..='\u{ff}']
+            = ['a'..='z' | 'A'..='Z' | '_' | '0'..='9' | '\u{10}'..='\u{1f}' | '\u{7f}'..='\u{10ffff}']
 
         pub rule name(nt: &mut NameTable) -> Name
             = s:$(!keyword() ident_first() ident_rest()*) { nt.intern(s.as_bytes()) }
@@ -187,7 +191,7 @@ peg::parser! {
             { rest.into_iter().fold(a, |acc, b| Expr::BinOp(BinOp::BitOr, Box::new(acc), Box::new(b))) }
 
         rule expr_four(nt: &mut NameTable) -> Expr
-            = a:expr_five(nt) rest:(_ () "^^" !['='] _ () b:expr_five(nt) { b })*
+            = a:expr_five(nt) rest:(_ () ("^^" !['='] / "~" !['=']) _ () b:expr_five(nt) { b })*
             { rest.into_iter().fold(a, |acc, b| Expr::BinOp(BinOp::BitXor, Box::new(acc), Box::new(b))) }
 
         rule expr_five(nt: &mut NameTable) -> Expr
@@ -198,11 +202,17 @@ peg::parser! {
             = a:expr_seven(nt) rest:(_ () op:shift_op() _ () b:expr_seven(nt) { (op, b) })*
             { rest.into_iter().fold(a, |acc, (op, b)| Expr::BinOp(op, Box::new(acc), Box::new(b))) }
 
-        // concat is right-associative
+        // concat is right-associative. Parse the left operand ONCE, then look
+        // for the operator; on absence return it unchanged (avoids re-parsing
+        // the operand, which caused exponential blowup on nested expressions).
         rule expr_seven(nt: &mut NameTable) -> Expr
-            = a:expr_eight(nt) _ () ".." !['.' | '='] _ () b:expr_seven(nt)
-              { Expr::BinOp(BinOp::Concat, Box::new(a), Box::new(b)) }
-            / expr_eight(nt)
+            = a:expr_eight(nt) b:(_ () ".." !['.' | '='] _ () b:expr_seven(nt) { b })?
+            {
+                match b {
+                    Some(b) => Expr::BinOp(BinOp::Concat, Box::new(a), Box::new(b)),
+                    None => a,
+                }
+            }
 
         rule expr_eight(nt: &mut NameTable) -> Expr
             = a:expr_nine(nt) rest:(_ () op:add_op() _ () b:expr_nine(nt) { (op, b) })*
@@ -216,11 +226,15 @@ peg::parser! {
             = op:unary_op() _ () e:expr_ten(nt) { Expr::UnOp(op, Box::new(e)) }
             / expr_eleven(nt)
 
-        // ^ is right-associative
+        // ^ is right-associative; same single-parse factoring as concat.
         rule expr_eleven(nt: &mut NameTable) -> Expr
-            = a:expr_twelve(nt) _ () "^" !['^' | '='] _ () b:expr_ten(nt)
-              { Expr::BinOp(BinOp::Pow, Box::new(a), Box::new(b)) }
-            / expr_twelve(nt)
+            = a:expr_twelve(nt) b:(_ () "^" !['^' | '='] _ () b:expr_ten(nt) { b })?
+            {
+                match b {
+                    Some(b) => Expr::BinOp(BinOp::Pow, Box::new(a), Box::new(b)),
+                    None => a,
+                }
+            }
 
         rule expr_twelve(nt: &mut NameTable) -> Expr
             = kw_nil() { Expr::Nil }
@@ -354,9 +368,8 @@ peg::parser! {
             / short_print_statement(nt)
             / short_if_statement(nt)
             / short_while_statement(nt)
-            / compound_statement(nt)
-            / assignment_statement(nt)
-            / function_call_statement(nt)
+            / local_statement(nt)
+            / expr_statement(nt)
             / label_statement(nt)
             / kw_break() { Stat::Break }
             / goto_statement(nt)
@@ -366,7 +379,6 @@ peg::parser! {
             / if_statement(nt)
             / for_statement(nt)
             / function_definition(nt)
-            / local_statement(nt)
             / return_statement(nt)
 
         rule label_statement(nt: &mut NameTable) -> Stat
@@ -425,8 +437,12 @@ peg::parser! {
                 v
             }
 
+        // In a single-line body, `return`'s value list (if any) must begin on
+        // the same physical line. A following newline ends the body, so e.g.
+        // `if (x) return` followed by `y=1` does not swallow `y` as a return
+        // value.
         rule short_body_return(nt: &mut NameTable) -> Stat
-            = kw_return() _ () vals:expr_list(nt)? { Stat::Return(vals.unwrap_or_default()) }
+            = kw_return() vals:(inline_sep() !eol() v:expr_list(nt) { v })? { Stat::Return(vals.unwrap_or_default()) }
 
         // Inline separator for PICO-8 single-line if/while bodies: skips spaces,
         // tabs and `;` but NOT a newline (a newline ends the single-line body).
@@ -508,31 +524,51 @@ peg::parser! {
             = kw_return() vals:(_ () v:expr_list(nt) { v })? _ () ";"?
             { Stat::Return(vals.unwrap_or_default()) }
 
-        // Compound assignment: [local] var op= expr
-        rule compound_statement(nt: &mut NameTable) -> Stat
-            = is_local:(kw_local() _ () { true } / { false })
-              target:variable(nt) _ () op:compound_op() _ () value:expression(nt)
-            { Stat::CompoundAssign { is_local, target, op, value: Box::new(value) } }
-
-        // Plain assignment: varlist = exprlist
-        rule assignment_statement(nt: &mut NameTable) -> Stat
-            = first:variable(nt) rest:(_ () "," _ () v:variable(nt) { v })* _ ()
-              "=" _ () values:expr_list(nt)
-            {
-                let mut targets = vec![first];
-                targets.extend(rest);
-                Stat::Assign { targets, values }
-            }
-
-        // Function call as statement
-        rule function_call_statement(nt: &mut NameTable) -> Stat
-            = e:function_call_expr(nt) {
-                match e {
-                    Expr::Call(c) => Stat::Call(c),
-                    Expr::MethodCall(mc) => Stat::MethodCall(mc),
-                    _ => Stat::Empty,
+        // Unified prefix-expression statement. The leading var/call chain is
+        // parsed ONCE (avoiding the exponential backtracking that came from
+        // having separate compound/assignment/call rules each re-parse it),
+        // then we dispatch on what follows: `op=` (compound), `,`/`=`
+        // (assignment) or nothing (a call statement).
+        rule expr_statement(nt: &mut NameTable) -> Stat
+            = first:expr_thirteen(nt)
+              tail:expr_statement_tail(nt)
+            {?
+                match tail {
+                    StatTail::Compound(op, value) => match expr_to_var(first) {
+                        Some(target) => Ok(Stat::CompoundAssign {
+                            is_local: false, target, op, value,
+                        }),
+                        None => Err("compound-assignment target"),
+                    },
+                    StatTail::Assign(rest, values) => {
+                        let mut targets = Vec::new();
+                        match expr_to_var(first) {
+                            Some(v) => targets.push(v),
+                            None => return Err("assignment target"),
+                        }
+                        for e in rest {
+                            match expr_to_var(e) {
+                                Some(v) => targets.push(v),
+                                None => return Err("assignment target"),
+                            }
+                        }
+                        Ok(Stat::Assign { targets, values })
+                    }
+                    StatTail::Call => match first {
+                        Expr::Call(c) => Ok(Stat::Call(c)),
+                        Expr::MethodCall(mc) => Ok(Stat::MethodCall(mc)),
+                        _ => Err("call statement"),
+                    },
                 }
             }
+
+        rule expr_statement_tail(nt: &mut NameTable) -> StatTail
+            = _ () op:compound_op() _ () value:expression(nt)
+              { StatTail::Compound(op, Box::new(value)) }
+            / rest:(_ () "," _ () v:expr_thirteen(nt) { v })* _ () "=" !['=']
+              _ () values:expr_list(nt)
+              { StatTail::Assign(rest, values) }
+            / { StatTail::Call }
 
         // ── Top-level grammar ────────────────────────────────────────
 
