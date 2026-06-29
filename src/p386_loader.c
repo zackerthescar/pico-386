@@ -99,6 +99,8 @@ void p386_vm_init(P386VMState *vm) {
     vm->base = vm->value_stack;
     vm->top = vm->value_stack;
     vm->value_stack_end = vm->value_stack + P386_VALUE_STACK_SLOTS;
+    vm->current_closure = 0;
+    vm->open_upvalues = 0;
     p386_register_builtins(vm);
 }
 
@@ -144,6 +146,8 @@ int p386_vm_call_global(P386VMState *vm, uint8_t slot, uint8_t nargs, uint8_t wa
     vm->call_depth = 0;
     vm->base = vm->value_stack;
     vm->current_proto = closure->proto;
+    vm->current_closure = (uint32_t)(uintptr_t)closure;
+    vm->open_upvalues = 0;
     vm->top = vm->base + closure->proto->n_regs;
     vm->ip = (const uint32_t *)(vm->program.bytecode_section + closure->proto->bytecode_off);
 

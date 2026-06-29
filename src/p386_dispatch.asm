@@ -15,6 +15,7 @@ msg_type_func  db 'expected function',0
 msg_oom        db 'out of memory',0
 msg_for_step   db 'for loop step must be non-zero',0
 msg_vararg     db 'variable call/return not implemented',0
+msg_type_upval db 'expected upvalue',0
 
 extern _p386_table_new
 extern _p386_table_get
@@ -24,6 +25,8 @@ extern _p386_table_next
 extern _p386_string_intern
 extern _p386_value_concat
 extern _p386_closure_new
+extern _p386_upvalue_find_or_add
+extern _p386_close_upvalues
 
 align 4
 dispatch_table:
@@ -43,6 +46,12 @@ dispatch_table:
     dd op_getglobal
 %elif i = 0x11
     dd op_setglobal
+%elif i = 0x12
+    dd op_getupval
+%elif i = 0x13
+    dd op_setupval
+%elif i = 0x14
+    dd op_close
 %elif i = 0x18
     dd op_newtable
 %elif i = 0x19
@@ -127,6 +136,8 @@ dispatch_table:
     dd op_closure
 %elif i = 0x51
     dd op_call
+%elif i = 0x52
+    dd op_tailcall
 %elif i = 0x53
     dd op_return
 %else
@@ -308,6 +319,59 @@ op_setglobal:
     mov  [edi + VM_GLOBALS + edx*8 + 4], ecx
     jmp  dispatch_next
 
+op_getupval:
+    movzx ecx, ah                  ; A
+    shr  eax, 16
+    movzx edx, al                  ; B
+    mov  ebx, [edi + VM_CURRENT_CLOSURE]
+    test ebx, ebx
+    jz   err_type_upval
+    movzx eax, byte [ebx + 8]      ; n_upvalues
+    cmp  edx, eax
+    jae  err_bounds
+    mov  ebx, [ebx + 12 + edx*4]   ; upvalue*
+    test ebx, ebx
+    jz   err_type_upval
+    mov  ebx, [ebx + 0]            ; slot*
+    test ebx, ebx
+    jz   err_type_upval
+    mov  eax, [ebx + 0]
+    mov  edx, [ebx + 4]
+    mov  [ebp + ecx*8], eax
+    mov  [ebp + ecx*8 + 4], edx
+    jmp  dispatch_next
+
+op_setupval:
+    movzx ecx, ah                  ; A
+    shr  eax, 16
+    movzx edx, al                  ; B
+    mov  ebx, [edi + VM_CURRENT_CLOSURE]
+    test ebx, ebx
+    jz   err_type_upval
+    movzx eax, byte [ebx + 8]      ; n_upvalues
+    cmp  edx, eax
+    jae  err_bounds
+    mov  ebx, [ebx + 12 + edx*4]   ; upvalue*
+    test ebx, ebx
+    jz   err_type_upval
+    mov  ebx, [ebx + 0]            ; slot*
+    test ebx, ebx
+    jz   err_type_upval
+    mov  eax, [ebp + ecx*8]
+    mov  edx, [ebp + ecx*8 + 4]
+    mov  [ebx + 0], eax
+    mov  [ebx + 4], edx
+    jmp  dispatch_next
+
+op_close:
+    movzx ecx, ah                  ; A
+    lea  eax, [ebp + ecx*8]
+    push eax
+    lea  eax, [edi + VM_OPEN_UPVALUES]
+    push eax
+    call _p386_close_upvalues
+    add  esp, 8
+    jmp  dispatch_next
 
 ; --- objects -------------------------------------------------------------
 store_value_eax_ecx:
@@ -1005,23 +1069,93 @@ op_tforloop:
 
 op_closure:
     movzx ecx, ah                  ; A
+    mov  [dest_tmp], ecx
     shr  eax, 16                   ; Bx = proto index
     movzx edx, ax
     mov  ebx, [edi + VM_PROGRAM + LP_PROTOS]
     mov  eax, edx
     imul eax, 24
-    add  eax, ebx
-    push ecx
+    add  eax, ebx                  ; eax = proto*
+    movzx ebx, byte [eax + PE_N_UPVALUES]
+    push ebx                       ; n_upvalues
     push eax                       ; proto pointer
     push edx                       ; proto index
     call _p386_closure_new
-    add  esp, 8
-    pop  ecx
+    add  esp, 12
     test eax, eax
     jz   err_oom
+    mov  [scratch_a + 12], eax     ; new closure*
+
+    movzx edx, byte [eax + 8]      ; n_upvalues
+    test edx, edx
+    jz   .store
+    mov  ebx, [edi + VM_CURRENT_CLOSURE]
+    test ebx, ebx
+    jz   err_type_upval
+
+    push esi
+    mov  ecx, [eax + 4]            ; proto*
+    mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  esi, [ecx + PE_UPVALS_OFF]
+    xor  ecx, ecx                  ; i
+.up_loop:
+    cmp  ecx, edx
+    jae  .up_done
+    movzx eax, byte [esi + ecx*2]      ; source
+    movzx ebx, byte [esi + ecx*2 + 1]  ; index
+    cmp  eax, 0
+    jne  .from_parent_up
+    lea  eax, [ebp + ebx*8]
+    push eax                       ; slot
+    lea  eax, [edi + VM_OPEN_UPVALUES]
+    push eax                       ; &head
+    call _p386_upvalue_find_or_add
+    add  esp, 8
+    test eax, eax
+    jz   .up_oom
+    mov  ebx, [scratch_a + 12]
+    mov  [ebx + 12 + ecx*4], eax
+    inc  ecx
+    jmp  .up_loop
+.from_parent_up:
+    cmp  eax, 1
+    jne  .up_bounds
+    mov  eax, [edi + VM_CURRENT_CLOSURE]
+    test eax, eax
+    jz   .up_type
+    movzx eax, byte [eax + 8]
+    cmp  ebx, eax
+    jae  .up_bounds
+    mov  eax, [edi + VM_CURRENT_CLOSURE]
+    mov  eax, [eax + 12 + ebx*4]
+    test eax, eax
+    jz   .up_type
+    mov  ebx, [scratch_a + 12]
+    mov  [ebx + 12 + ecx*4], eax
+    inc  ecx
+    jmp  .up_loop
+.up_oom:
+    pop  esi
+    jmp  err_oom
+.up_bounds:
+    pop  esi
+    jmp  err_bounds
+.up_type:
+    pop  esi
+    jmp  err_type_upval
+.up_done:
+    pop  esi
+.store:
+    mov  ecx, [dest_tmp]
+    mov  eax, [scratch_a + 12]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_FUNC
     jmp  dispatch_next
+
+op_tailcall:
+    ; Implement as CALL followed by immediate return from current frame.
+    ; For now, preserve semantics by reusing op_call path (no frame optimization).
+    jmp op_call
 
 op_call:
     movzx ecx, ah                  ; A: function register
@@ -1141,12 +1275,14 @@ op_call:
     cmp  dword [edi + VM_CALL_DEPTH], CALL_STACK_DEPTH
     jae  err_bounds
     mov  eax, [edi + VM_CALL_DEPTH]
-    shl  eax, 4
+    imul eax, FRAME_SIZE
     lea  eax, [edi + VM_CALL_STACK + eax]
     mov  [eax + FRAME_RETURN_IP], esi
     mov  [eax + FRAME_RETURN_BASE], ebp
     mov  edx, [edi + VM_CURRENT_PROTO]
     mov  [eax + FRAME_RETURN_PROTO], edx
+    mov  edx, [edi + VM_CURRENT_CLOSURE]
+    mov  [eax + FRAME_RETURN_CLOSURE], edx
     mov  edx, [scratch_a]
     mov  [eax + FRAME_RETURN_REG], dl
     mov  edx, [scratch_a + 8]
@@ -1155,6 +1291,7 @@ op_call:
 
     mov  ecx, [scratch_a]          ; caller A
     mov  eax, [ebp + ecx*8]        ; closure
+    mov  [edi + VM_CURRENT_CLOSURE], eax
     mov  ebx, [eax + 4]            ; closure->proto
     lea  eax, [ebp + ecx*8 + 8]    ; first arg in caller
     mov  [scratch_a + 12], eax
@@ -1226,11 +1363,13 @@ op_return:
     mov  [scratch_a + 8], ebp      ; callee base
     dec  dword [edi + VM_CALL_DEPTH]
     mov  eax, [edi + VM_CALL_DEPTH]
-    shl  eax, 4
+    imul eax, FRAME_SIZE
     lea  eax, [edi + VM_CALL_STACK + eax]
     mov  esi, [eax + FRAME_RETURN_IP]
     mov  ebx, [eax + FRAME_RETURN_PROTO]
     mov  [edi + VM_CURRENT_PROTO], ebx
+    mov  ebx, [eax + FRAME_RETURN_CLOSURE]
+    mov  [edi + VM_CURRENT_CLOSURE], ebx
     mov  ebp, [eax + FRAME_RETURN_BASE]
     mov  [edi + VM_BASE], ebp
     movzx ecx, byte [eax + FRAME_RETURN_REG]
@@ -1326,6 +1465,10 @@ err_type_iter:
 err_type_func:
     mov  dword [edi + VM_STATUS], ERR_TYPE
     mov  dword [edi + VM_ERROR_MSG], msg_type_func
+    jmp  done
+err_type_upval:
+    mov  dword [edi + VM_STATUS], ERR_TYPE
+    mov  dword [edi + VM_ERROR_MSG], msg_type_upval
     jmp  done
 err_bounds_pop4:
     add  esp, 4

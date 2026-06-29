@@ -308,10 +308,55 @@ int p386_table_next(const P386Table *t, const P386Value *key,
     return 0;
 }
 
-P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto) {
-    P386Closure *c = (P386Closure *)malloc(sizeof(P386Closure));
+P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto,
+                              uint8_t n_upvalues) {
+    size_t bytes = sizeof(P386Closure);
+    P386Closure *c;
+    if (n_upvalues > 0) {
+        bytes += ((size_t)n_upvalues - 1U) * sizeof(P386Upvalue *);
+    }
+    c = (P386Closure *)calloc(1, bytes);
     if (!c) return 0;
     c->proto_index = proto_index;
     c->proto = proto;
+    c->n_upvalues = n_upvalues;
     return c;
+}
+
+P386Upvalue *p386_upvalue_find_or_add(P386Upvalue **head, P386Value *slot) {
+    P386Upvalue *uv;
+    if (!head || !slot) return 0;
+    uv = *head;
+    while (uv) {
+        if (uv->slot == slot) return uv;
+        uv = uv->next_open;
+    }
+    uv = (P386Upvalue *)malloc(sizeof(P386Upvalue));
+    if (!uv) return 0;
+    uv->slot = slot;
+    uv->closed.value = 0;
+    uv->closed.tag = P386_TAG_NIL;
+    uv->next_open = *head;
+    *head = uv;
+    return uv;
+}
+
+void p386_close_upvalues(P386Upvalue **head, P386Value *from_slot) {
+    P386Upvalue *uv;
+    P386Upvalue *prev;
+    if (!head || !from_slot) return;
+    prev = 0;
+    uv = *head;
+    while (uv) {
+        if (uv->slot >= from_slot) {
+            uv->closed = *uv->slot;
+            uv->slot = &uv->closed;
+            if (prev) prev->next_open = uv->next_open;
+            else *head = uv->next_open;
+            uv = (prev ? prev->next_open : *head);
+            continue;
+        }
+        prev = uv;
+        uv = uv->next_open;
+    }
 }

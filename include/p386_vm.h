@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "p386_bytecode.h"
+#include "p386_value.h"
 
 #define P386_VALUE_STACK_SLOTS 4096
 #define P386_CALL_STACK_DEPTH  256
@@ -16,13 +17,6 @@
 #define P386_VM_ERR_DIV0   -4
 #define P386_VM_ERR_BOUNDS -5
 #define P386_VM_ERR_UNIMPL -6
-
-#pragma pack(push, 1)
-typedef struct P386Value {
-    int32_t  value;
-    uint32_t tag;
-} P386Value;
-#pragma pack(pop)
 
 typedef struct P386LoadedProgram {
     const uint8_t *buf;
@@ -37,6 +31,7 @@ typedef struct P386CallFrame {
     uint32_t return_ip;
     uint32_t return_base;
     uint32_t return_proto;
+    uint32_t return_closure;
     uint8_t return_reg;
     uint8_t want_rets;
     uint8_t padding[2];
@@ -56,6 +51,8 @@ typedef struct P386VMState {
     P386Value globals[256];
     const P386ProtoEntry *current_proto;
     const uint32_t *ip;
+    uint32_t current_closure;
+    uint32_t open_upvalues;
     P386CallFrame call_stack[P386_CALL_STACK_DEPTH];
     uint32_t call_depth;
 } P386VMState;

@@ -19,7 +19,8 @@
  */
 
 #include <stdint.h>
-#include "p386_vm.h"
+#include "p386_bytecode.h"
+#include "p386_value.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,9 +45,18 @@ typedef struct P386Table {
     uint32_t        array_len;  /* contiguous int keys 1..N (`#t`) */
 } P386Table;
 
+typedef struct P386Upvalue {
+    P386Value *slot;              /* open: points into stack, closed: &closed */
+    P386Value  closed;
+    struct P386Upvalue *next_open;
+} P386Upvalue;
+
 typedef struct P386Closure {
     uint32_t proto_index;
     const P386ProtoEntry *proto;
+    uint8_t n_upvalues;
+    uint8_t _pad[3];
+    P386Upvalue *upvalues[1];     /* flexible tail */
 } P386Closure;
 
 /* String construction / interning. */
@@ -63,8 +73,11 @@ P386String *p386_num_to_string(int32_t fp);
 /* Table operations. NEWTABLE(B,C): hints currently ignored. */
 P386Table *p386_table_new(uint32_t array_hint, uint32_t hash_hint);
 
-/* Closure construction. Upvalues are added later; v1 closure is a proto handle. */
-P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto);
+/* Closure / upvalue helpers. */
+P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto,
+                              uint8_t n_upvalues);
+P386Upvalue *p386_upvalue_find_or_add(P386Upvalue **head, P386Value *slot);
+void p386_close_upvalues(P386Upvalue **head, P386Value *from_slot);
 
 /* GET: writes nil if absent. Always succeeds. */
 void p386_table_get(const P386Table *t, const P386Value *key, P386Value *out);
