@@ -1484,3 +1484,218 @@ TEST(vm_tailcall_cfunc_returns_value) {
     ASSERT_EQ(0, vm.call_depth);
     PASS();
 }
+
+/* ===================================================================== *
+ * Trivial-tier builtin tests. These call the C builtins directly (same  *
+ * pattern as vm_builtin_cls_pset_pget) since they're pure value ops.    *
+ * ===================================================================== */
+
+#define BNUM(a, i, n) do { (a)[i].value = (int32_t)((n) << 16); (a)[i].tag = P386_TAG_NUM; } while(0)
+#define BFP(a, i, fp) do { (a)[i].value = (int32_t)(fp); (a)[i].tag = P386_TAG_NUM; } while(0)
+
+TEST(vm_builtin_math_basic) {
+    P386VMState vm;
+    P386Value a[3];
+    p386_vm_init(&vm);
+
+    BNUM(a, 0, -5);
+    ASSERT_EQ(1, p386_builtin_abs(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(5), a[0].value);
+
+    BFP(a, 0, P386_FP_INT(3) | 0x8000); /* 3.5 */
+    ASSERT_EQ(1, p386_builtin_flr(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(3), a[0].value);
+
+    BFP(a, 0, P386_FP_INT(3) | 0x8000); /* 3.5 */
+    ASSERT_EQ(1, p386_builtin_ceil(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(4), a[0].value);
+
+    BNUM(a, 0, -9);
+    ASSERT_EQ(1, p386_builtin_sgn(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(-1), a[0].value);
+    BNUM(a, 0, 0);
+    ASSERT_EQ(1, p386_builtin_sgn(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(1), a[0].value); /* sgn(0)==1 */
+
+    BNUM(a, 0, 3); BNUM(a, 1, 7);
+    ASSERT_EQ(1, p386_builtin_min(&vm, a, 2, 1));
+    ASSERT_EQ(P386_FP_INT(3), a[0].value);
+    BNUM(a, 0, 3); BNUM(a, 1, 7);
+    ASSERT_EQ(1, p386_builtin_max(&vm, a, 2, 1));
+    ASSERT_EQ(P386_FP_INT(7), a[0].value);
+
+    BNUM(a, 0, 1); BNUM(a, 1, 9); BNUM(a, 2, 5);
+    ASSERT_EQ(1, p386_builtin_mid(&vm, a, 3, 1));
+    ASSERT_EQ(P386_FP_INT(5), a[0].value);
+    PASS();
+}
+
+TEST(vm_builtin_sqrt) {
+    P386VMState vm;
+    P386Value a[1];
+    p386_vm_init(&vm);
+    BNUM(a, 0, 144);
+    ASSERT_EQ(1, p386_builtin_sqrt(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(12), a[0].value);
+    BNUM(a, 0, 2);
+    ASSERT_EQ(1, p386_builtin_sqrt(&vm, a, 1, 1));
+    /* sqrt(2) ~= 1.41421 -> 92681/65536. Allow +-2 lsb. */
+    ASSERT_TRUE(a[0].value > 92679 && a[0].value < 92683);
+    BNUM(a, 0, -4);
+    ASSERT_EQ(1, p386_builtin_sqrt(&vm, a, 1, 1));
+    ASSERT_EQ(0, a[0].value);
+    PASS();
+}
+
+TEST(vm_builtin_trig) {
+    P386VMState vm;
+    P386Value a[1];
+    p386_vm_init(&vm);
+    /* PICO-8: cos(0)=1, sin(0)=0, cos(0.25)=0, sin(0.25)=-1. */
+    BNUM(a, 0, 0);
+    ASSERT_EQ(1, p386_builtin_cos(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(1), a[0].value);
+    BNUM(a, 0, 0);
+    ASSERT_EQ(1, p386_builtin_sin(&vm, a, 1, 1));
+    ASSERT_EQ(0, a[0].value);
+    BFP(a, 0, 0x4000); /* 0.25 turn */
+    ASSERT_EQ(1, p386_builtin_sin(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(-1), a[0].value);
+    BFP(a, 0, 0x4000); /* 0.25 turn */
+    ASSERT_EQ(1, p386_builtin_cos(&vm, a, 1, 1));
+    ASSERT_TRUE(a[0].value > -4 && a[0].value < 4); /* ~0 */
+    PASS();
+}
+
+TEST(vm_builtin_bitwise) {
+    P386VMState vm;
+    P386Value a[2];
+    p386_vm_init(&vm);
+    BNUM(a, 0, 12); BNUM(a, 1, 10);
+    ASSERT_EQ(1, p386_builtin_band(&vm, a, 2, 1));
+    ASSERT_EQ(P386_FP_INT(8), a[0].value);
+    BNUM(a, 0, 12); BNUM(a, 1, 10);
+    ASSERT_EQ(1, p386_builtin_bor(&vm, a, 2, 1));
+    ASSERT_EQ(P386_FP_INT(14), a[0].value);
+    BNUM(a, 0, 12); BNUM(a, 1, 10);
+    ASSERT_EQ(1, p386_builtin_bxor(&vm, a, 2, 1));
+    ASSERT_EQ(P386_FP_INT(6), a[0].value);
+    /* shl: 1 << 4 = 16 (operates on raw bits) */
+    BNUM(a, 0, 1); BNUM(a, 1, 4);
+    ASSERT_EQ(1, p386_builtin_shl(&vm, a, 2, 1));
+    ASSERT_EQ(P386_FP_INT(16), a[0].value);
+    /* shr arithmetic: 16 >> 2 = 4 */
+    BNUM(a, 0, 16); BNUM(a, 1, 2);
+    ASSERT_EQ(1, p386_builtin_shr(&vm, a, 2, 1));
+    ASSERT_EQ(P386_FP_INT(4), a[0].value);
+    PASS();
+}
+
+TEST(vm_builtin_peek_poke) {
+    P386VMState vm;
+    P386Value a[2];
+    p8_ram_init();
+    p386_vm_init(&vm);
+    /* poke then peek */
+    BNUM(a, 0, 0x4300); BNUM(a, 1, 0xab);
+    ASSERT_EQ(0, p386_builtin_poke(&vm, a, 2, 0));
+    ASSERT_EQ(0xab, p8_ram.raw[0x4300]);
+    BNUM(a, 0, 0x4300);
+    ASSERT_EQ(1, p386_builtin_peek(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(0xab), a[0].value);
+    /* poke2 little-endian */
+    BNUM(a, 0, 0x4310); BNUM(a, 1, 0x1234);
+    ASSERT_EQ(0, p386_builtin_poke2(&vm, a, 2, 0));
+    ASSERT_EQ(0x34, p8_ram.raw[0x4310]);
+    ASSERT_EQ(0x12, p8_ram.raw[0x4311]);
+    BNUM(a, 0, 0x4310);
+    ASSERT_EQ(1, p386_builtin_peek2(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(0x1234), a[0].value);
+    PASS();
+}
+
+TEST(vm_builtin_table_add_count_del) {
+    P386VMState vm;
+    P386Value a[2];
+    P386Table *t;
+    p386_vm_init(&vm);
+    t = p386_table_new(0, 0);
+    ASSERT_NOT_NULL(t);
+
+    a[0].value = (int32_t)(uintptr_t)t; a[0].tag = P386_TAG_TAB;
+    BNUM(a, 1, 100);
+    ASSERT_EQ(1, p386_builtin_add(&vm, a, 2, 1)); /* returns value */
+    ASSERT_EQ(P386_FP_INT(100), a[0].value);
+
+    a[0].value = (int32_t)(uintptr_t)t; a[0].tag = P386_TAG_TAB;
+    BNUM(a, 1, 200);
+    p386_builtin_add(&vm, a, 2, 0);
+
+    a[0].value = (int32_t)(uintptr_t)t; a[0].tag = P386_TAG_TAB;
+    ASSERT_EQ(1, p386_builtin_count(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(2), a[0].value);
+
+    /* del value 100 -> shifts 200 down, count becomes 1 */
+    a[0].value = (int32_t)(uintptr_t)t; a[0].tag = P386_TAG_TAB;
+    BNUM(a, 1, 100);
+    ASSERT_EQ(1, p386_builtin_del(&vm, a, 2, 1));
+    a[0].value = (int32_t)(uintptr_t)t; a[0].tag = P386_TAG_TAB;
+    ASSERT_EQ(1, p386_builtin_count(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(1), a[0].value);
+    PASS();
+}
+
+TEST(vm_builtin_string_ops) {
+    P386VMState vm;
+    P386Value a[3];
+    P386String *s;
+    p386_vm_init(&vm);
+
+    /* tostr(42) -> "42" */
+    BNUM(a, 0, 42);
+    ASSERT_EQ(1, p386_builtin_tostr(&vm, a, 1, 1));
+    ASSERT_EQ(P386_TAG_STR, a[0].tag);
+    s = (P386String *)(uintptr_t)a[0].value;
+    ASSERT_STR_EQ("42", s->data);
+
+    /* tonum("3.5") -> 3.5 */
+    s = p386_string_intern("3.5", 3);
+    a[0].value = (int32_t)(uintptr_t)s; a[0].tag = P386_TAG_STR;
+    ASSERT_EQ(1, p386_builtin_tonum(&vm, a, 1, 1));
+    ASSERT_EQ(P386_TAG_NUM, a[0].tag);
+    ASSERT_EQ((int32_t)(P386_FP_INT(3) | 0x8000), a[0].value);
+
+    /* chr(65) -> "A"; ord("A") -> 65 */
+    BNUM(a, 0, 65);
+    ASSERT_EQ(1, p386_builtin_chr(&vm, a, 1, 1));
+    ASSERT_EQ(P386_TAG_STR, a[0].tag);
+    s = (P386String *)(uintptr_t)a[0].value;
+    ASSERT_STR_EQ("A", s->data);
+    ASSERT_EQ(1, p386_builtin_ord(&vm, a, 1, 1));
+    ASSERT_EQ(P386_FP_INT(65), a[0].value);
+
+    /* sub("hello", 2, 4) -> "ell" */
+    s = p386_string_intern("hello", 5);
+    a[0].value = (int32_t)(uintptr_t)s; a[0].tag = P386_TAG_STR;
+    BNUM(a, 1, 2); BNUM(a, 2, 4);
+    ASSERT_EQ(1, p386_builtin_sub(&vm, a, 3, 1));
+    s = (P386String *)(uintptr_t)a[0].value;
+    ASSERT_STR_EQ("ell", s->data);
+    PASS();
+}
+
+TEST(vm_builtin_call_via_dispatch) {
+    /* End-to-end: GETGLOBAL flr; LOADK 3.9; CALL want 1; RETURN. Exercises the
+     * CFUNC call path through the asm dispatcher, not just a direct C call. */
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, (int32_t)(P386_FP_INT(3) | 0xe666), P386_TAG_NUM); /* ~3.9 */
+    fx_emit(&f, P386_ABC(P386_OP_GETGLOBAL, 0, P386_BUILTIN_FLR, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 0));
+    fx_emit(&f, P386_ABC(P386_OP_CALL, 0, 2, 2)); /* flr(3.9), want 1 */
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 0, P386_FP_INT(3));
+    PASS();
+}

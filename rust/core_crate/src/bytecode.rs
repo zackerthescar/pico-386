@@ -82,12 +82,54 @@ pub const P386_BUILTIN_SFX: u8 = 12;
 pub const P386_BUILTIN_MUSIC: u8 = 13;
 pub const P386_BUILTIN_PAIRS: u8 = 14;
 pub const P386_BUILTIN_IPAIRS: u8 = 15;
-pub const P386_BUILTIN_COUNT: u8 = 16;
-pub const P386_GLOBAL_INIT: u8 = 16;
-pub const P386_GLOBAL_UPDATE: u8 = 17;
-pub const P386_GLOBAL_UPDATE60: u8 = 18;
-pub const P386_GLOBAL_DRAW: u8 = 19;
-pub const P386_USER_GLOBAL_BASE: u8 = 20;
+// math
+pub const P386_BUILTIN_ABS: u8 = 16;
+pub const P386_BUILTIN_FLR: u8 = 17;
+pub const P386_BUILTIN_CEIL: u8 = 18;
+pub const P386_BUILTIN_SGN: u8 = 19;
+pub const P386_BUILTIN_MIN: u8 = 20;
+pub const P386_BUILTIN_MAX: u8 = 21;
+pub const P386_BUILTIN_MID: u8 = 22;
+pub const P386_BUILTIN_SQRT: u8 = 23;
+pub const P386_BUILTIN_SIN: u8 = 24;
+pub const P386_BUILTIN_COS: u8 = 25;
+pub const P386_BUILTIN_ATAN2: u8 = 26;
+pub const P386_BUILTIN_RND: u8 = 27;
+pub const P386_BUILTIN_SRAND: u8 = 28;
+// bitwise (function forms)
+pub const P386_BUILTIN_BAND: u8 = 29;
+pub const P386_BUILTIN_BOR: u8 = 30;
+pub const P386_BUILTIN_BXOR: u8 = 31;
+pub const P386_BUILTIN_BNOT: u8 = 32;
+pub const P386_BUILTIN_SHL: u8 = 33;
+pub const P386_BUILTIN_SHR: u8 = 34;
+pub const P386_BUILTIN_LSHR: u8 = 35;
+pub const P386_BUILTIN_ROTL: u8 = 36;
+pub const P386_BUILTIN_ROTR: u8 = 37;
+// memory (function forms)
+pub const P386_BUILTIN_PEEK: u8 = 38;
+pub const P386_BUILTIN_POKE: u8 = 39;
+pub const P386_BUILTIN_PEEK2: u8 = 40;
+pub const P386_BUILTIN_POKE2: u8 = 41;
+pub const P386_BUILTIN_PEEK4: u8 = 42;
+pub const P386_BUILTIN_POKE4: u8 = 43;
+// table
+pub const P386_BUILTIN_ADD: u8 = 44;
+pub const P386_BUILTIN_DEL: u8 = 45;
+pub const P386_BUILTIN_DELI: u8 = 46;
+pub const P386_BUILTIN_COUNTF: u8 = 47;
+// string / conversion
+pub const P386_BUILTIN_TOSTR: u8 = 48;
+pub const P386_BUILTIN_TONUM: u8 = 49;
+pub const P386_BUILTIN_CHR: u8 = 50;
+pub const P386_BUILTIN_ORD: u8 = 51;
+pub const P386_BUILTIN_SUB: u8 = 52;
+pub const P386_BUILTIN_COUNT: u8 = 53;
+pub const P386_GLOBAL_INIT: u8 = 53;
+pub const P386_GLOBAL_UPDATE: u8 = 54;
+pub const P386_GLOBAL_UPDATE60: u8 = 55;
+pub const P386_GLOBAL_DRAW: u8 = 56;
+pub const P386_USER_GLOBAL_BASE: u8 = 57;
 
 #[derive(Clone)]
 pub enum Constant {

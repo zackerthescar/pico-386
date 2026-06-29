@@ -71,5 +71,13 @@ void main() {
     RUN_TEST(vm_call_requires_cfunc);
     RUN_TEST(vm_tailcall_lua_reuses_frame_and_returns_sum);
     RUN_TEST(vm_tailcall_cfunc_returns_value);
+    RUN_TEST(vm_builtin_math_basic);
+    RUN_TEST(vm_builtin_sqrt);
+    RUN_TEST(vm_builtin_trig);
+    RUN_TEST(vm_builtin_bitwise);
+    RUN_TEST(vm_builtin_peek_poke);
+    RUN_TEST(vm_builtin_table_add_count_del);
+    RUN_TEST(vm_builtin_string_ops);
+    RUN_TEST(vm_builtin_call_via_dispatch);
     TEST_REPORT();
 }

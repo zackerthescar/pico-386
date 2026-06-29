@@ -1401,6 +1401,8 @@ op_call:
     jnz  .copy_fixed
     mov  eax, ebx
 .copy_fixed:
+    mov  [scratch_a], esi          ; preserve IP: the copy below uses esi as a
+                                   ; scratch and esi is the live instruction ptr
     push eax                       ; ncopy/result slots requested
     xor  edx, edx
 .copy_loop:
@@ -1437,6 +1439,7 @@ op_call:
     add  eax, ecx
     lea  edx, [ebp + eax*8]
     mov  [edi + VM_TOP], edx
+    mov  esi, [scratch_a]          ; restore IP clobbered by the copy loop
     jmp  dispatch_next
 .builtin_error:
     mov  [edi + VM_STATUS], eax
