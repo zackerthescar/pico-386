@@ -40,11 +40,12 @@ peg::parser! {
         rule eol() = ['\r' | '\n']
         rule eol_or_eof() = eol() / ![_]
 
+        // Long bracket of arbitrary level: [[ ... ]], [=[ ... ]=], [==[ ... ]==] ...
         rule long_comment_string()
-            = "[[" long_comment_body() "]]"
+            = "[" eqs:$(['=']*) "[" (!close_bracket(eqs.len()) [_])* close_bracket(eqs.len())
 
-        rule long_comment_body()
-            = (!"]]" (long_comment_string() / [_]))*
+        rule close_bracket(level: usize)
+            = "]" ['=']*<{level}> "]"
 
         // ── Keywords ─────────────────────────────────────────────────
 
@@ -117,9 +118,10 @@ peg::parser! {
             = "\"" (escaped() / !['\"' | '\r' | '\n'] [_])* "\""
         rule short_string_single()
             = "\'" (escaped() / !['\'' | '\r' | '\n'] [_])* "\'"
-        rule escaped() = "\\" [_]
-        rule long_string() = "[" "="* "[" long_string_body()
-        rule long_string_body() = (!("]]") [_])* "]]"
+        // `\z` skips the whitespace (including newlines) that follows it.
+        rule escaped() = "\\z" ([' ' | '\t' | '\r' | '\n'])* / "\\" [_]
+        rule long_string()
+            = "[" eqs:$(['=']*) "[" (!close_bracket(eqs.len()) [_])* close_bracket(eqs.len())
 
         // ── Operators ────────────────────────────────────────────────
 
@@ -414,8 +416,8 @@ peg::parser! {
 
         rule short_body(nt: &mut NameTable) -> Vec<Stat>
             = r:short_body_return(nt) { vec![r] }
-            / first:statement(nt) rest:(_ () !eol_boundary() s:statement(nt) { s })*
-              ret:(_ () r:short_body_return(nt) { r })?
+            / first:statement(nt) rest:(inline_sep() s:statement(nt) { s })*
+              ret:(inline_sep() r:short_body_return(nt) { r })?
             {
                 let mut v = vec![first];
                 v.extend(rest);
@@ -426,20 +428,17 @@ peg::parser! {
         rule short_body_return(nt: &mut NameTable) -> Stat
             = kw_return() _ () vals:expr_list(nt)? { Stat::Return(vals.unwrap_or_default()) }
 
-        rule eol_boundary()
-            = quiet!{ _no_newline()* eol() }
-
-        rule _no_newline()
-            = [' ' | '\t']
-            / comment()
-            / cpp_comment()
+        // Inline separator for PICO-8 single-line if/while bodies: skips spaces,
+        // tabs and `;` but NOT a newline (a newline ends the single-line body).
+        rule inline_sep()
+            = quiet!{ [' ' | '\t' | ';']* }
 
         // Short-while: while (expr) stmts-on-same-line
         rule short_while_statement(nt: &mut NameTable) -> Stat
             = kw_while() _ ()
               cond:bracket_expr(nt) _ ()
               !kw_do()
-              first:statement(nt) rest:(_ () !eol_boundary() s:statement(nt) { s })*
+              first:statement(nt) rest:(inline_sep() s:statement(nt) { s })*
             {
                 let mut body = vec![first];
                 body.extend(rest);

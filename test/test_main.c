@@ -29,6 +29,9 @@ void main() {
     RUN_TEST(parse_simple_assignment);
     RUN_TEST(parse_function_def);
     RUN_TEST(parse_pico8_shorthand_if);
+    RUN_TEST(parse_long_string_eq_level);
+    RUN_TEST(parse_long_comment_eq_level);
+    RUN_TEST(parse_short_if_stops_at_newline);
     RUN_TEST(parse_pico8_shorthand_print);
     RUN_TEST(parse_pico8_compound_assign);
     RUN_TEST(parse_pico8_bitwise_ops);

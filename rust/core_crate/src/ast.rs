@@ -401,7 +401,6 @@ pub fn parse_string_literal(raw: &str) -> Vec<u8> {
                     out.push(b'\n'); i += 1;
                     if i < end && b[i] == b'\n' { i += 1; }
                 }
-                b'0' => { out.push(0); i += 1; }
                 b'x' => {
                     i += 1;
                     let mut val: u8 = 0;

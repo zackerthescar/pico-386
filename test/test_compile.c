@@ -39,6 +39,39 @@ TEST(parse_pico8_shorthand_if) {
     PASS();
 }
 
+TEST(parse_long_string_eq_level) {
+    /* [=[ ... ]=] long-bracket strings of arbitrary level must parse. */
+    const char *code = "x = [=[a]]b]=]\ny = [==[c]==]";
+    ASSERT_EQ(0, p8_parse_rs((const unsigned char *)code, strlen(code)));
+    PASS();
+}
+
+TEST(parse_long_comment_eq_level) {
+    const char *code = "--[=[\nmultiline ]] comment\n]=]\nx = 1";
+    ASSERT_EQ(0, p8_parse_rs((const unsigned char *)code, strlen(code)));
+    PASS();
+}
+
+TEST(parse_short_if_stops_at_newline) {
+    /* The single-line if body ends at the newline; the next line is a
+     * separate statement (not part of the conditional). */
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    const char *code = "a=0 b=0\nif (false) a=1\nb=2\nreturn a,b";
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    /* a stays 0 (guarded), b becomes 2 (unconditional). */
+    ASSERT_EQ(0, vm.value_stack[0].value);
+    ASSERT_EQ(2 << 16, vm.value_stack[1].value);
+    p8_free_program(prog);
+    PASS();
+}
+
 TEST(parse_pico8_shorthand_print) {
     const char *code = "?\"hello world\"";
     ASSERT_EQ(0, p8_parse_rs((const unsigned char *)code, strlen(code)));
