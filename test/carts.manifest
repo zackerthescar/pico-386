@@ -22,6 +22,11 @@
 # the repository's MIT license. Raw URLs pin to a specific commit for
 # reproducibility; bump the SHA when intentionally rolling forward.
 PTOOLCRT	https://raw.githubusercontent.com/dansanderson/picotool/49808e5ddb21e886a5608a19c95ec3ca6f1ee541/tests/testdata/test_cart.p8.png	4a0c90794114ae0f2aa46ab42c926fcf09d898b4bce3df1f6ed831ad18540798	MIT	picotool@49808e5d:tests/testdata/test_cart.p8.png
+# NOTE: picotool's test_gol.p8 and memorymap.p8 compile cleanly but fail at
+# runtime because they call PICO-8 API builtins that are not implemented yet
+# (flip, shr, band, peek, ...). Re-add them here once those builtins land:
+#   PTOOLGOL .../test_gol.p8.png    d481f7e5cdbe72961b01d4b023eaf1745faca8ac74f3cd66a8b30d3b5f94617c
+#   PTOOLMEM .../memorymap.p8.png   a9d30844103cb1ff0b8e9c8560a0c3f1905e1e4d4d9acafbc159b5a01c702038
 
 # ── shrinko8 sample carts (MIT) ─────────────────────────────────────────────
 # https://github.com/thisismypassport/shrinko8
