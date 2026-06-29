@@ -1311,3 +1311,51 @@ TEST(vm_call_requires_cfunc) {
     ASSERT_STR_EQ("expected function", vm.error_msg);
     PASS();
 }
+
+TEST(vm_tailcall_lua_reuses_frame_and_returns_sum) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value main_consts[] = {
+        { P386_FP_INT(10), P386_TAG_NUM },
+        { P386_FP_INT(20), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABX(P386_OP_LOADK, 1, 0),
+        P386_ABX(P386_OP_LOADK, 2, 1),
+        P386_ABC(P386_OP_TAILCALL, 0, 3, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_ADD, 0, P386_RK_REG(0), P386_RK_REG(1)),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 4, main_consts, 2, 4,
+        child_code, 2, 0, 0, 2, 4));
+    ASSERT_NUM(vm, 0, P386_FP_INT(30));
+    ASSERT_EQ(0, vm.call_depth);
+    PASS();
+}
+
+TEST(vm_tailcall_cfunc_returns_value) {
+    VmFixture f;
+    P386VMState vm;
+
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(11), P386_TAG_NUM);
+    fx_const(&f, P386_FP_INT(12), P386_TAG_NUM);
+    fx_emit(&f, P386_ABC(P386_OP_GETGLOBAL, 0, P386_BUILTIN_PGET, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 1, 0));
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 2, 1));
+    fx_emit(&f, P386_ABC(P386_OP_TAILCALL, 0, 3, 0));
+
+    p8_ram_init();
+    p8_ram.mem.screen[(12U * 64U) + (11U >> 1)] = 0x0a;
+
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_TAG(vm, 1, P386_TAG_NUM);
+    ASSERT_EQ(11 << 16, vm.value_stack[1].value);
+    ASSERT_EQ(0, vm.call_depth);
+    PASS();
+}

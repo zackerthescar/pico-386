@@ -67,5 +67,7 @@ void main() {
     RUN_TEST(vm_return_vararg_traps_in_lua_frame);
     RUN_TEST(vm_call_lua_depth_overflow_traps);
     RUN_TEST(vm_call_requires_cfunc);
+    RUN_TEST(vm_tailcall_lua_reuses_frame_and_returns_sum);
+    RUN_TEST(vm_tailcall_cfunc_returns_value);
     TEST_REPORT();
 }

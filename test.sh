@@ -336,6 +336,16 @@ run_integration_test() {
         echo "  [WARN] Compiler did not run"
     fi
 
+    if grep -q "main chunk failed:" "$SERIAL_LOG"; then
+        echo "  [FAIL] Runtime failed while executing main chunk"
+        grep "main chunk failed:" "$SERIAL_LOG" | sed 's/^/         /'
+        PASS=false
+    elif grep -q "_init failed:\|_update failed:\|_update60 failed:\|_draw failed:" "$SERIAL_LOG"; then
+        echo "  [FAIL] Runtime failed during lifecycle callback"
+        grep "_init failed:\|_update failed:\|_update60 failed:\|_draw failed:" "$SERIAL_LOG" | sed 's/^/         /'
+        PASS=false
+    fi
+
     if grep -q "Unloading cart" "$SERIAL_LOG"; then
         echo "  [PASS] Clean shutdown"
     else
@@ -450,6 +460,9 @@ run_one_cart() {
     grep -q "Lua code:" "$SERIAL_LOG" || { echo "  [FAIL] no Lua decompressed"; ok=false; }
     if grep -q "p8_compile: FAIL" "$SERIAL_LOG"; then
         echo "  [FAIL] compiler rejected code"; ok=false
+    fi
+    if grep -q "main chunk failed:\|_init failed:\|_update failed:\|_update60 failed:\|_draw failed:" "$SERIAL_LOG"; then
+        echo "  [FAIL] runtime error during cart execution"; ok=false
     fi
 
     if [ "$ok" = true ]; then

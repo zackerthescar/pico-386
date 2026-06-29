@@ -1153,9 +1153,143 @@ op_closure:
     jmp  dispatch_next
 
 op_tailcall:
-    ; Implement as CALL followed by immediate return from current frame.
-    ; For now, preserve semantics by reusing op_call path (no frame optimization).
-    jmp op_call
+    movzx ecx, ah                  ; A: function register
+    mov  edx, eax
+    shr  edx, 16
+    cmp  dword [ebp + ecx*8 + 4], TAG_FUNC
+    je   .lua_tail
+    cmp  dword [ebp + ecx*8 + 4], TAG_CFUNC
+    je   .c_tail
+    jmp  err_type_func
+
+.c_tail:
+    mov  ebx, [ebp + ecx*8]
+    test ebx, ebx
+    jz   err_type_func
+    movzx eax, dl                  ; B = nargs + 1 (0 => from top)
+    test eax, eax
+    jnz  .c_fixed_args
+    mov  eax, [edi + VM_TOP]
+    lea  edx, [ebp + ecx*8 + 8]
+    sub  eax, edx
+    sar  eax, 3
+    jns  .c_args_ready
+    xor  eax, eax
+    jmp  .c_args_ready
+.c_fixed_args:
+    dec  eax
+.c_args_ready:
+    ; current frame is going away -> close all open upvalues at base[0]
+    push ecx
+    push eax
+    push ebp
+    lea  edx, [edi + VM_OPEN_UPVALUES]
+    push edx
+    call _p386_close_upvalues
+    add  esp, 8
+    pop  eax
+    pop  ecx
+    push esi
+    push ecx
+    push eax
+    push dword 0                   ; want all returns
+    push eax                       ; nargs
+    lea  eax, [ebp + ecx*8 + 8]
+    push eax                       ; args window
+    push edi
+    call ebx
+    add  esp, 16
+    pop  ebx                       ; nargs
+    pop  ecx                       ; A
+    pop  esi
+    test eax, eax
+    jns  .c_tail_returns
+    mov  [edi + VM_STATUS], eax
+    mov  dword [edi + VM_ERROR_MSG], msg_type_func
+    jmp  done
+.c_tail_returns:
+    lea  ecx, [ecx + 1]            ; return start register (first arg slot)
+    mov  edx, eax                  ; actual returns
+    jmp  op_return.count_ready
+
+.lua_tail:
+    mov  ebx, [ebp + ecx*8]        ; closure
+    test ebx, ebx
+    jz   err_type_func
+
+    movzx eax, dl                  ; B = nargs + 1 (0 => from top)
+    test eax, eax
+    jnz  .lua_fixed_args
+    mov  eax, [edi + VM_TOP]
+    lea  edx, [ebp + ecx*8 + 8]
+    sub  eax, edx
+    sar  eax, 3
+    jns  .lua_args_ready
+    xor  eax, eax
+    jmp  .lua_args_ready
+.lua_fixed_args:
+    dec  eax
+.lua_args_ready:
+    mov  [scratch_a + 4], eax      ; nargs
+    mov  [scratch_a], ecx          ; func reg A
+
+    ; current frame is going away -> close all open upvalues at base[0]
+    push ebp
+    lea  ecx, [edi + VM_OPEN_UPVALUES]
+    push ecx
+    call _p386_close_upvalues
+    add  esp, 8
+
+    mov  ecx, [scratch_a]          ; func reg A
+    lea  eax, [ebp + ecx*8 + 8]    ; first arg in current frame
+    mov  [scratch_a + 12], eax
+
+    mov  eax, [ebp + ecx*8]        ; closure
+    mov  [edi + VM_CURRENT_CLOSURE], eax
+    mov  ebx, [eax + 4]            ; closure->proto
+    mov  [edi + VM_CURRENT_PROTO], ebx
+
+    movzx edx, byte [ebx + PE_N_REGS]
+    mov  [dest_tmp], edx
+    lea  eax, [ebp + edx*8]
+    cmp  eax, [edi + VM_VALUE_STACK_END]
+    ja   err_bounds
+    mov  [edi + VM_TOP], eax
+
+    ; copy min(nargs, n_params) args down to R0.. before clearing
+    mov  edx, [scratch_a + 4]
+    movzx eax, byte [ebx + PE_N_PARAMS]
+    cmp  edx, eax
+    jbe  .lua_copy_count_ready
+    mov  edx, eax
+.lua_copy_count_ready:
+    mov  [scratch_a + 8], edx      ; argcopy
+    xor  ecx, ecx
+    mov  eax, [scratch_a + 12]
+.lua_arg_copy_loop:
+    cmp  ecx, edx
+    jae  .lua_clear_rest
+    mov  esi, [eax + ecx*8]
+    mov  [ebp + ecx*8], esi
+    mov  esi, [eax + ecx*8 + 4]
+    mov  [ebp + ecx*8 + 4], esi
+    inc  ecx
+    jmp  .lua_arg_copy_loop
+
+.lua_clear_rest:
+    mov  ecx, [scratch_a + 8]
+.lua_clear_loop:
+    cmp  ecx, [dest_tmp]
+    jae  .lua_enter
+    mov  dword [ebp + ecx*8], 0
+    mov  dword [ebp + ecx*8 + 4], TAG_NIL
+    inc  ecx
+    jmp  .lua_clear_loop
+
+.lua_enter:
+    mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  esi, [ebx + PE_BYTECODE_OFF]
+    jmp  dispatch_next
 
 op_call:
     movzx ecx, ah                  ; A: function register

@@ -30,3 +30,4 @@ PTOOLCRT	https://raw.githubusercontent.com/dansanderson/picotool/49808e5ddb21e88
 # ── fake-08 sample carts (MIT) ──────────────────────────────────────────────
 # https://github.com/jtothebell/fake-08
 # (Add specific entries here once a known-good commit + path is verified.)
+CPARSE	https://raw.githubusercontent.com/jtothebell/fake-08/814991a2571ad3970e386cef48f3b148aa1c27b9/test/carts/cartparsetest.p8.png	555ef0afed7a4b9e7826c65440b03f63f16cfb4624d6792363f70b4e130981b2	MIT	fake-08@814991a2:test/carts/cartparsetest.p8.png
