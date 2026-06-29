@@ -5,6 +5,7 @@ extern crate alloc;
 pub mod ast;
 pub mod bytecode;
 pub mod compiler;
+pub mod preprocess;
 #[cfg(feature = "std")]
 pub mod disasm;
 
@@ -602,4 +603,15 @@ pub fn compile_source(src: &str) -> Result<bytecode::FuncProto, alloc::string::S
     let chunk = p8lua::grammar(src, &mut nt).map_err(|e| e.to_string())?;
     let comp = compiler::Compiler::new(nt);
     comp.compile_chunk(chunk).ok_or_else(|| "codegen failed".to_string())
+}
+
+/// Host-only: compile a cart source file from disk, expanding `#include`
+/// directives relative to the file's directory first.
+#[cfg(feature = "std")]
+pub fn compile_file(path: &std::path::Path) -> Result<bytecode::FuncProto, alloc::string::String> {
+    use alloc::string::ToString;
+    let src = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut resolver = preprocess::FsIncludeResolver::for_cart(path);
+    let pp = preprocess::preprocess_includes(&src, &mut resolver);
+    compile_source(&pp.source)
 }

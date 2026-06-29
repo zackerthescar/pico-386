@@ -4,14 +4,15 @@ use std::io::Read;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let src = if args.len() > 1 {
-        std::fs::read_to_string(&args[1]).expect("read file")
+    let result = if args.len() > 1 {
+        // From a file: resolve #include directives relative to its directory.
+        pico386_core::compile_file(std::path::Path::new(&args[1]))
     } else {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s).expect("read stdin");
-        s
+        pico386_core::compile_source(&s)
     };
-    match pico386_core::compile_source(&src) {
+    match result {
         Ok(proto) => {
             if std::env::var("P8C_RAW").is_ok() {
                 let bc = &proto.code;
