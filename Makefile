@@ -150,7 +150,7 @@ $(ZLIB_LIB): $(ZLIB_DIR)/zconf.h
 	$(MAKE) $(ZLIB_OBJS)
 	wlib -b -c $(ZLIB_LIB) $(foreach obj,$(ZLIB_OBJS),-+$(obj))
 
-src/%.obj: src/%.c $(ZLIB_DIR)/zconf.h include/p386_layout.h
+src/%.obj: src/%.c $(ZLIB_DIR)/zconf.h include/p386_layout.h include/builtins.h
 	$(CC) $(CFLAGS) -fo=$@ $<
 
 include/p386_layout.h src/p386_layout.inc: tools/gen_p386_layout.py tools/p386_layout.py
@@ -162,7 +162,7 @@ src/%.obj: src/%.asm src/p386_layout.inc
 
 # Test main includes other test .c files directly, so depend on all of them
 TEST_DEPS = $(wildcard test/*.c)
-test/%.obj: test/%.c $(TEST_DEPS) include/p386_layout.h
+test/%.obj: test/%.c $(TEST_DEPS) include/p386_layout.h include/builtins.h
 	$(CC) $(CFLAGS) -i=test -fo=$@ $<
 
 $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c $(ZLIB_DIR)/zconf.h
