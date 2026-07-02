@@ -631,6 +631,11 @@ TEST(vm_init_registers_cfunc_builtins) {
     ASSERT_EQ(P386_TAG_CFUNC, vm.globals[P386_BUILTIN_PAIRS].tag);
     ASSERT_EQ((int32_t)(uintptr_t)p386_builtin_pairs,
               vm.globals[P386_BUILTIN_PAIRS].value);
+    /* Lua-prelude builtins get no CFUNC; their slots stay nil until the
+     * compiled prelude assigns them. */
+    ASSERT_EQ(P386_TAG_NIL, vm.globals[P386_BUILTIN_IPAIRS].tag);
+    ASSERT_EQ(P386_TAG_NIL, vm.globals[P386_BUILTIN_ALL].tag);
+    ASSERT_EQ(P386_TAG_NIL, vm.globals[P386_BUILTIN_FOREACH].tag);
     ASSERT_EQ(P386_TAG_NIL, vm.globals[P386_GLOBAL_INIT].tag);
     PASS();
 }

@@ -366,6 +366,8 @@ impl Compiler {
             b"chr" => P386_BUILTIN_CHR,
             b"ord" => P386_BUILTIN_ORD,
             b"sub" => P386_BUILTIN_SUB,
+            b"all" => P386_BUILTIN_ALL,
+            b"foreach" => P386_BUILTIN_FOREACH,
             b"_init" => P386_GLOBAL_INIT,
             b"_update" => P386_GLOBAL_UPDATE,
             b"_update60" => P386_GLOBAL_UPDATE60,

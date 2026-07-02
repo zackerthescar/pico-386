@@ -73,6 +73,14 @@ typedef enum P386BuiltinSlot {
     P386_BUILTIN_ORD,
     P386_BUILTIN_SUB,
 
+    /* ── higher-order (implemented in the compiler's Lua prelude) ──
+     * These slots have NO CFUNC registered (func == NULL in
+     * p386_builtin_defs). The rust compiler prepends a Lua prelude to every
+     * cart which defines them via SETGLOBAL into these slots. IPAIRS above
+     * is also prelude-implemented (its CFUNC registration was removed). */
+    P386_BUILTIN_ALL,
+    P386_BUILTIN_FOREACH,
+
     P386_BUILTIN_COUNT,
 
     /* Stable user-global slots the host runtime calls directly. */

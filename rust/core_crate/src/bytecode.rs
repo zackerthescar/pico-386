@@ -124,12 +124,15 @@ pub const P386_BUILTIN_TONUM: u8 = 49;
 pub const P386_BUILTIN_CHR: u8 = 50;
 pub const P386_BUILTIN_ORD: u8 = 51;
 pub const P386_BUILTIN_SUB: u8 = 52;
-pub const P386_BUILTIN_COUNT: u8 = 53;
-pub const P386_GLOBAL_INIT: u8 = 53;
-pub const P386_GLOBAL_UPDATE: u8 = 54;
-pub const P386_GLOBAL_UPDATE60: u8 = 55;
-pub const P386_GLOBAL_DRAW: u8 = 56;
-pub const P386_USER_GLOBAL_BASE: u8 = 57;
+// higher-order builtins implemented in the Lua prelude (no CFUNC on the C side)
+pub const P386_BUILTIN_ALL: u8 = 53;
+pub const P386_BUILTIN_FOREACH: u8 = 54;
+pub const P386_BUILTIN_COUNT: u8 = 55;
+pub const P386_GLOBAL_INIT: u8 = 55;
+pub const P386_GLOBAL_UPDATE: u8 = 56;
+pub const P386_GLOBAL_UPDATE60: u8 = 57;
+pub const P386_GLOBAL_DRAW: u8 = 58;
+pub const P386_USER_GLOBAL_BASE: u8 = 59;
 
 #[derive(Clone)]
 pub enum Constant {

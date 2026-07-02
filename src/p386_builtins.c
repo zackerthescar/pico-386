@@ -659,7 +659,8 @@ const P386BuiltinDef p386_builtin_defs[P386_BUILTIN_COUNT] = {
     { P386_BUILTIN_SFX,      "sfx",      p386_builtin_noop },
     { P386_BUILTIN_MUSIC,    "music",    p386_builtin_noop },
     { P386_BUILTIN_PAIRS,    "pairs",    p386_builtin_pairs },
-    { P386_BUILTIN_IPAIRS,   "ipairs",   p386_builtin_pairs },
+    /* ipairs is implemented in the compiler's Lua prelude; no CFUNC here. */
+    { P386_BUILTIN_IPAIRS,   "ipairs",   0 },
     { P386_BUILTIN_ABS,      "abs",      p386_builtin_abs },
     { P386_BUILTIN_FLR,      "flr",      p386_builtin_flr },
     { P386_BUILTIN_CEIL,     "ceil",     p386_builtin_ceil },
@@ -696,7 +697,11 @@ const P386BuiltinDef p386_builtin_defs[P386_BUILTIN_COUNT] = {
     { P386_BUILTIN_TONUM,    "tonum",    p386_builtin_tonum },
     { P386_BUILTIN_CHR,      "chr",      p386_builtin_chr },
     { P386_BUILTIN_ORD,      "ord",      p386_builtin_ord },
-    { P386_BUILTIN_SUB,      "sub",      p386_builtin_sub }
+    { P386_BUILTIN_SUB,      "sub",      p386_builtin_sub },
+    /* all/foreach are implemented in the compiler's Lua prelude; the slots
+     * are reserved (wire protocol) but no CFUNC is registered for them. */
+    { P386_BUILTIN_ALL,      "all",      0 },
+    { P386_BUILTIN_FOREACH,  "foreach",  0 }
 };
 
 void p386_register_builtins(P386VMState *vm) {
@@ -705,6 +710,7 @@ void p386_register_builtins(P386VMState *vm) {
     for (i = 0; i < (uint32_t)P386_BUILTIN_COUNT; i++) {
         P386BuiltinSlot slot = p386_builtin_defs[i].slot;
         if ((uint32_t)slot >= 256U) continue;
+        if (!p386_builtin_defs[i].func) continue; /* Lua-prelude builtin */
         vm->globals[(uint32_t)slot].value = (int32_t)(uintptr_t)p386_builtin_defs[i].func;
         vm->globals[(uint32_t)slot].tag = P386_TAG_CFUNC;
     }
