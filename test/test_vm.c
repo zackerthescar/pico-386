@@ -1486,6 +1486,130 @@ TEST(vm_tailcall_cfunc_returns_value) {
 }
 
 /* ===================================================================== *
+ * TFORCALL with a TAG_FUNC (Lua closure) iterator.                      *
+ * ===================================================================== */
+
+/* Generic-for over a closure iterator f(state, ctrl) that returns ctrl+1
+ * while ctrl+1 <= state, else no values. Sums the loop variable: 1+2+3=6.
+ * nvars=2 so the second loop var is exercised (always nil-padded), and
+ * state is a NUM (not TAB), which validates the relaxed state type check. */
+TEST(vm_tforcall_lua_iterator_sums_loop_vars) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value main_consts[] = {
+        { P386_FP_INT(0), P386_TAG_NUM },
+        { P386_FP_INT(3), P386_TAG_NUM }
+    };
+    P386Value child_consts[] = {
+        { P386_FP_INT(1), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_LOADK, 0, 0),                          /* sum = 0 */
+        P386_ABX(P386_OP_CLOSURE, 1, 1),                        /* iterator */
+        P386_ABX(P386_OP_LOADK, 2, 1),                          /* state = 3 */
+        P386_ABX(P386_OP_LOADK, 3, 0),                          /* control = 0 */
+        P386_ASBX(P386_OP_JMP, 0, 1),                           /* to TFORCALL */
+        P386_ABC(P386_OP_ADD, 0, P386_RK_REG(0), P386_RK_REG(4)),
+        P386_ABC(P386_OP_TFORCALL, 1, 2, 0),                    /* nvars = 2 */
+        P386_ASBX(P386_OP_TFORLOOP, 1, -3),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_ADD, 2, P386_RK_REG(1), P386_RK_CONST(0)),
+        P386_ABC(P386_OP_LE, 3, P386_RK_REG(2), P386_RK_REG(0)),
+        P386_ASBX(P386_OP_JMPT, 3, 1),
+        P386_ABC(P386_OP_RETURN, 0, 1, 0),                      /* done: no values */
+        P386_ABC(P386_OP_RETURN, 2, 2, 0)                       /* yield ctrl+1 */
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 9, main_consts, 2, 8,
+        child_code, 5, child_consts, 1, 2, 4));
+    ASSERT_NUM(vm, 0, P386_FP_INT(6));
+    ASSERT_NIL(vm, 4);   /* first loop var nil after final call */
+    ASSERT_NIL(vm, 5);   /* second loop var always nil-padded */
+    ASSERT_EQ(0, vm.call_depth);
+    PASS();
+}
+
+/* Iterator that returns no values: want_rets nil-padding makes R[A+3] nil,
+ * so TFORLOOP exits immediately and the body never runs. */
+TEST(vm_tforcall_lua_iterator_empty_returns_skip_body) {
+    VmFixture f;
+    P386VMState vm;
+    P386Value main_consts[] = {
+        { P386_FP_INT(0), P386_TAG_NUM },
+        { P386_FP_INT(99), P386_TAG_NUM }
+    };
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_LOADK, 0, 1),                          /* marker = 99 */
+        P386_ABX(P386_OP_CLOSURE, 1, 1),
+        P386_ABX(P386_OP_LOADK, 2, 0),
+        P386_ABX(P386_OP_LOADK, 3, 0),
+        P386_ASBX(P386_OP_JMP, 0, 1),
+        P386_ABX(P386_OP_LOADK, 0, 0),                          /* body clobbers */
+        P386_ABC(P386_OP_TFORCALL, 1, 1, 0),
+        P386_ASBX(P386_OP_TFORLOOP, 1, -3),
+        P386_ABC(P386_OP_RETURN, 0, 2, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+
+    ASSERT_EQ(P386_VM_HALTED, run_two_proto_fixture(&f, &vm,
+        main_code, 9, main_consts, 2, 8,
+        child_code, 1, 0, 0, 2, 4));
+    ASSERT_NUM(vm, 0, P386_FP_INT(99));
+    ASSERT_NIL(vm, 4);
+    ASSERT_EQ(0, vm.call_depth);
+    PASS();
+}
+
+/* Non-callable iterator (NUM) still traps err_type_iter. */
+TEST(vm_tforcall_non_callable_iterator_traps) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(7), P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABC(P386_OP_TFORCALL, 0, 1, 0));
+    fx_emit(&f, P386_ASBX(P386_OP_TFORLOOP, 0, -2));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_TYPE, run_fixture(&f, &vm));
+    ASSERT_STR_EQ("expected table iterator state", vm.error_msg);
+    PASS();
+}
+
+/* Iterator whose body runs its own TFORCALL on a fresh copy of itself:
+ * recursion through TFORCALL's frame push must hit the call-depth limit
+ * and trap cleanly (ERR_BOUNDS), not smash the stack. */
+TEST(vm_tforcall_lua_iterator_depth_overflow_traps) {
+    VmFixture f;
+    P386VMState vm;
+    unsigned long main_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 0, 1),
+        P386_ABC(P386_OP_LOADN, 1, 2, 0),                       /* state, ctrl = nil */
+        P386_ABC(P386_OP_TFORCALL, 0, 1, 0),
+        P386_ASBX(P386_OP_TFORLOOP, 0, -2),
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+    unsigned long child_code[] = {
+        P386_ABX(P386_OP_CLOSURE, 2, 1),
+        P386_ABC(P386_OP_LOADN, 3, 2, 0),
+        P386_ABC(P386_OP_TFORCALL, 2, 1, 0),
+        P386_ASBX(P386_OP_TFORLOOP, 2, -2),
+        P386_ABC(P386_OP_RETURN, 0, 1, 0)
+    };
+
+    ASSERT_EQ(P386_VM_ERR_BOUNDS, run_two_proto_fixture(&f, &vm,
+        main_code, 5, 0, 0, 8,
+        child_code, 5, 0, 0, 2, 8));
+    ASSERT_STR_EQ("register/constant out of bounds", vm.error_msg);
+    ASSERT_EQ(P386_CALL_STACK_DEPTH, vm.call_depth);
+    PASS();
+}
+
+/* ===================================================================== *
  * Trivial-tier builtin tests. These call the C builtins directly (same  *
  * pattern as vm_builtin_cls_pset_pget) since they're pure value ops.    *
  * ===================================================================== */

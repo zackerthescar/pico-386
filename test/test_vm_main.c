@@ -71,6 +71,10 @@ void main() {
     RUN_TEST(vm_call_requires_cfunc);
     RUN_TEST(vm_tailcall_lua_reuses_frame_and_returns_sum);
     RUN_TEST(vm_tailcall_cfunc_returns_value);
+    RUN_TEST(vm_tforcall_lua_iterator_sums_loop_vars);
+    RUN_TEST(vm_tforcall_lua_iterator_empty_returns_skip_body);
+    RUN_TEST(vm_tforcall_non_callable_iterator_traps);
+    RUN_TEST(vm_tforcall_lua_iterator_depth_overflow_traps);
     RUN_TEST(vm_builtin_math_basic);
     RUN_TEST(vm_builtin_sqrt);
     RUN_TEST(vm_builtin_trig);

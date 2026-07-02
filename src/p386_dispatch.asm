@@ -1016,7 +1016,9 @@ op_forloop:
 op_tforcall:
     movzx ecx, ah                  ; A: R[A]=iterator, R[A+1]=state, R[A+2]=control
     shr  eax, 16
-    movzx edx, al                  ; C result count (0 => all; for now produce key/value)
+    movzx edx, al                  ; B = nvars (loop variable count, >= 1)
+    cmp  dword [ebp + ecx*8 + 4], TAG_FUNC
+    je   .lua_iter
     cmp  dword [ebp + ecx*8 + 4], TAG_CFUNC
     je   .check_state
     cmp  dword [ebp + ecx*8 + 4], TAG_NIL
@@ -1054,6 +1056,24 @@ op_tforcall:
     mov  dword [ebp + ecx*8 + 32], 0
     mov  dword [ebp + ecx*8 + 36], TAG_NIL
     jmp  dispatch_next
+
+.lua_iter:
+    ; TAG_FUNC iterator: call R[A](R[A+1], R[A+2]) as a normal Lua call whose
+    ; returns land at R[A+3..]. This is exactly op_call's .lua_func frame push
+    ; with func reg = A, nargs = 2 (args already contiguous at R[A+1..A+2]),
+    ; want_rets = nvars — except return_reg is A+3 instead of A. esi already
+    ; points at the following TFORLOOP, so the callee's RETURN resumes there
+    ; and nil-pads missing loop vars per the want_rets contract.
+    ; State/control (R[A+1], R[A+2]) may be any tag; closures ignore them.
+    mov  ebx, [ebp + ecx*8]        ; P386Closure*
+    test ebx, ebx
+    jz   err_type_iter
+    mov  [scratch_a], ecx          ; func reg A
+    mov  dword [scratch_a + 4], 2  ; nargs (state, control)
+    mov  [scratch_a + 8], edx      ; want_rets = nvars (>= 1, never "all")
+    lea  eax, [ecx + 3]
+    mov  [scratch_a + 20], eax     ; return_reg = A+3 (loop variables)
+    jmp  call_push_lua_frame
 
 op_tforloop:
     movzx ecx, ah                  ; A; R[A+3] is first result from TFORCALL
@@ -1475,7 +1495,16 @@ op_call:
 .lua_nargs_ready:
     mov  [scratch_a + 4], eax      ; nargs
     mov  [scratch_a], ecx          ; caller A
+    mov  [scratch_a + 20], ecx     ; return_reg = A (op_tforcall uses A+3)
 
+; Shared Lua frame push. Entry contract (memory scratch, register-free):
+;   [scratch_a]      = function register (closure in R[here], args at R[here+1..])
+;   [scratch_a + 4]  = nargs
+;   [scratch_a + 8]  = want_rets (0 => all)
+;   [scratch_a + 20] = return_reg in the caller frame
+; esi = return IP (instruction after the call site). Jumped to by
+; op_tforcall's .lua_iter path with return_reg = A+3.
+call_push_lua_frame:
     cmp  dword [edi + VM_CALL_DEPTH], CALL_STACK_DEPTH
     jae  err_bounds
     mov  eax, [edi + VM_CALL_DEPTH]
@@ -1487,7 +1516,7 @@ op_call:
     mov  [eax + FRAME_RETURN_PROTO], edx
     mov  edx, [edi + VM_CURRENT_CLOSURE]
     mov  [eax + FRAME_RETURN_CLOSURE], edx
-    mov  edx, [scratch_a]
+    mov  edx, [scratch_a + 20]
     mov  [eax + FRAME_RETURN_REG], dl
     mov  edx, [scratch_a + 8]
     mov  [eax + FRAME_WANT_RETS], dl
