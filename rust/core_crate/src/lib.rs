@@ -586,11 +586,25 @@ peg::parser! {
 
 // ── Compile API ──────────────────────────────────────────────────────
 
+/// Lua prelude prepended to every cart before parsing. Implements the
+/// higher-order builtins (all/foreach/ipairs) that cannot be CFUNCs because
+/// C code cannot re-enter the bytecode interpreter.
+pub const PRELUDE: &str = include_str!("prelude.lua");
+
+fn with_prelude(src: &str) -> alloc::string::String {
+    let mut s = alloc::string::String::with_capacity(PRELUDE.len() + 1 + src.len());
+    s.push_str(PRELUDE);
+    s.push('\n');
+    s.push_str(src);
+    s
+}
+
 /// Parse and compile PICO-8 Lua source into a FuncProto. Returns None on
-/// parse or codegen error.
+/// parse or codegen error. The builtin Lua prelude is prepended first.
 pub fn compile(src: &str) -> Option<bytecode::FuncProto> {
+    let full = with_prelude(src);
     let mut nt = NameTable::new();
-    let chunk = p8lua::grammar(src, &mut nt).ok()?;
+    let chunk = p8lua::grammar(&full, &mut nt).ok()?;
     let comp = compiler::Compiler::new(nt);
     comp.compile_chunk(chunk)
 }
@@ -599,8 +613,9 @@ pub fn compile(src: &str) -> Option<bytecode::FuncProto> {
 #[cfg(feature = "std")]
 pub fn compile_source(src: &str) -> Result<bytecode::FuncProto, alloc::string::String> {
     use alloc::string::ToString;
+    let full = with_prelude(src);
     let mut nt = NameTable::new();
-    let chunk = p8lua::grammar(src, &mut nt).map_err(|e| e.to_string())?;
+    let chunk = p8lua::grammar(&full, &mut nt).map_err(|e| e.to_string())?;
     let comp = compiler::Compiler::new(nt);
     comp.compile_chunk(chunk).ok_or_else(|| "codegen failed".to_string())
 }
@@ -614,4 +629,36 @@ pub fn compile_file(path: &std::path::Path) -> Result<bytecode::FuncProto, alloc
     let mut resolver = preprocess::FsIncludeResolver::for_cart(path);
     let pp = preprocess::preprocess_includes(&src, &mut resolver);
     compile_source(&pp.source)
+}
+
+#[cfg(all(test, feature = "std"))]
+mod prelude_tests {
+    #[test]
+    fn prelude_alone_compiles() {
+        // Empty cart: only the prelude is compiled.
+        super::compile_source("").expect("prelude must compile");
+    }
+
+    #[test]
+    fn comment_headed_cart_still_compiles() {
+        let src = "-- my cart\n-- by author\nx=1\nfunction _draw() cls() end\n";
+        super::compile_source(src).expect("comment-headed cart must compile");
+    }
+
+    #[test]
+    fn prelude_defines_builtin_slots() {
+        use crate::bytecode::{P386_BUILTIN_ALL, P386_BUILTIN_FOREACH, P386_BUILTIN_IPAIRS};
+        let proto = super::compile_source("").expect("compile");
+        let text = crate::disasm::disasm(&proto);
+        for slot in [P386_BUILTIN_ALL, P386_BUILTIN_FOREACH, P386_BUILTIN_IPAIRS] {
+            let needle = alloc::format!("SETGLOBAL  R0, {}", slot);
+            assert!(text.contains(&needle), "missing {}", needle);
+        }
+    }
+
+    #[test]
+    fn foreach_call_compiles() {
+        let src = "s=0 foreach({1,2,3},function(v) s+=v end)";
+        super::compile_source(src).expect("foreach cart must compile");
+    }
 }

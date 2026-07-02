@@ -628,6 +628,126 @@ TEST(compile_varargs_return_spread_runs_vm) {
     PASS();
 }
 
+TEST(compile_foreach_sums_elements) {
+    /* foreach comes from the compiler's Lua prelude; the callback is a Lua
+     * closure invoked through a plain CALL inside the prelude's loop. */
+    const char *code =
+        "local s=0\n"
+        "foreach({1,2,3}, function(v) s+=v end)\n"
+        "return s";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    if (p386_vm_run(&vm) != P386_VM_HALTED) {
+        FAIL(vm.error_msg ? vm.error_msg : "vm error");
+    }
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(6 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_all_iterates_generic_for) {
+    /* `for v in all(t)` exercises TFORCALL's TAG_FUNC iterator path. */
+    const char *code =
+        "local s=0\n"
+        "for v in all({4,5,6}) do s+=v end\n"
+        "return s";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(15 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_foreach_del_during_iteration) {
+    /* PICO-8 semantics: del(t,v) of the current element during foreach must
+     * not skip the following element (the prelude's prev-compare handles
+     * the shift-down). 1+2+3 with every element deleted = 6, and the table
+     * ends up empty. */
+    const char *code =
+        "local s=0\n"
+        "local t={1,2,3}\n"
+        "foreach(t, function(v) s+=v del(t,v) end)\n"
+        "return s,#t";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(6 << 16, vm.value_stack[0].value);
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[1].tag);
+    ASSERT_EQ(0, vm.value_stack[1].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_ipairs_yields_index_and_value) {
+    const char *code =
+        "local s=0\n"
+        "for i,v in ipairs({7,8}) do s+=i+v end\n"
+        "return s";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(18 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(compile_comment_headed_cart_with_prelude) {
+    /* Regression guard: prepending the prelude must not break carts whose
+     * source starts with header comment lines. */
+    const char *code =
+        "-- my cart\n"
+        "-- by author\n"
+        "x = 12\n"
+        "return x";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_TAG_NUM, vm.value_stack[0].tag);
+    ASSERT_EQ(12 << 16, vm.value_stack[0].value);
+    p8_free_program(prog);
+    PASS();
+}
+
 TEST(compile_lifecycle_slots_and_host_call_draw_pixels) {
     const char *code = "function _init() cls(1) end\nfunction _draw() pset(3,4,7) end";
     P8Program prog;

@@ -685,8 +685,23 @@ impl Compiler {
         self.pop_scope();
     }
 
+    /// Close this frame's open upvalues before an explicit RETURN. The frame
+    /// dies with the return, so any closure that escaped it (e.g. an iterator
+    /// returned by `all`) must have its captures moved to the heap now; the
+    /// callee frame of the next call reuses these exact stack slots. The
+    /// fall-off-the-end epilogue gets this via pop_scope, and TAILCALL closes
+    /// in the VM, but explicit returns need it emitted here. CLOSE does not
+    /// modify registers or `top`, so it is safe between evaluating the return
+    /// values and the RETURN itself.
+    fn close_frame_upvalues_for_return(&mut self) {
+        if !self.fs().captured.is_empty() {
+            self.emit(abc(P386_OP_CLOSE, 0, 0, 0));
+        }
+    }
+
     fn compile_return(&mut self, values: &[Expr]) {
         if values.is_empty() {
+            self.close_frame_upvalues_for_return();
             self.emit(abc(P386_OP_RETURN, 0, 1, 0));
             return;
         }
@@ -732,6 +747,7 @@ impl Compiler {
                     self.fs_mut().freereg = dst + 1;
                 }
             }
+            self.close_frame_upvalues_for_return();
             self.emit(abc(P386_OP_RETURN, base, 0, 0));
             return;
         }
@@ -742,6 +758,9 @@ impl Compiler {
         let base = self.freereg();
         let n = values.len().min(250) as u8;
         self.compile_expr_list(values, base, n);
+        // CLOSE before the shift-down: the MOVEs below overwrite R0.., which
+        // may still hold captured locals that escaping closures reference.
+        self.close_frame_upvalues_for_return();
         if base != 0 {
             for i in 0..n {
                 self.emit(abc(P386_OP_MOVE, i, base + i, 0));

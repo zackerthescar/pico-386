@@ -70,6 +70,11 @@ void main() {
     RUN_TEST(compile_function_literal_call_runs_vm);
     RUN_TEST(compile_nested_noncapturing_function_call_runs_vm);
     RUN_TEST(compile_captured_local_runs_vm);
+    RUN_TEST(compile_foreach_sums_elements);
+    RUN_TEST(compile_all_iterates_generic_for);
+    RUN_TEST(compile_foreach_del_during_iteration);
+    RUN_TEST(compile_ipairs_yields_index_and_value);
+    RUN_TEST(compile_comment_headed_cart_with_prelude);
     RUN_TEST(compile_lifecycle_slots_and_host_call_draw_pixels);
 
     TEST_REPORT();
