@@ -206,8 +206,8 @@ interns the result. coerces NUM to STR via `tostring` (decimal, with optional fr
 | -------- | ---- | --------- | -------------------------------------------------------------------- |
 | FORPREP  | 0x45 | A, sBx    | numeric for: `R[A] -= R[A+2]; PC += sBx`                             |
 | FORLOOP  | 0x46 | A, sBx    | `R[A] += R[A+2]; if step-and-limit-ok then PC += sBx; R[A+3] = R[A]` |
-| TFORCALL | 0x47 | A, C      | `R[A+3..A+2+C] = R[A](R[A+1], R[A+2])`                               |
-| TFORLOOP | 0x48 | A, sBx    | `if R[A+1] != nil then R[A] = R[A+1]; PC += sBx`                     |
+| TFORCALL | 0x47 | A, B      | `R[A+3..A+2+B] = R[A](R[A+1], R[A+2])` (B = nvars, ≥ 1)             |
+| TFORLOOP | 0x48 | A, sBx    | `if R[A+3] != nil then R[A+2] = R[A+3]; PC += sBx`                   |
 
 #### numeric for register layout
 
@@ -234,6 +234,25 @@ FORLOOP's "limit-ok" check: if `step > 0`, check `idx <= limit`. if `step < 0`, 
 | R[A+3..A+2+nvars] | visible loop variables        |
 
 after TFORCALL, the first returned value is in R[A+3]. TFORLOOP checks if it's nil; if not, copies R[A+3] back to R[A+2] (the new control) and jumps.
+
+#### TFORCALL iterator dispatch
+
+TFORCALL branches on the tag of `R[A]` (the iterator):
+
+- **CFUNC or NIL iterator + TAB state** — the `pairs` fast path: the handler
+  calls `p386_table_next` directly on the state table, writing key/value to
+  `R[A+3]`/`R[A+4]` (no CallFrame, no C→Lua reentry).
+- **FUNC iterator** — a Lua closure: the handler pushes a normal CallFrame
+  exactly like CALL's Lua path, with function reg = A, nargs = 2 (state and
+  control already sit contiguously at `R[A+1..A+2]`), `want_rets = B` (nvars)
+  and `return_reg = A+3`. The saved return IP is the following TFORLOOP, so
+  the iterator's RETURN resumes there with its results nil-padded to nvars
+  at `R[A+3..]` per the normal want_rets contract. State and control may be
+  ANY tag on this path (closure iterators typically ignore them).
+- anything else traps `err_type_iter`.
+
+this is what makes closure-based iterators (`all`, `ipairs` from the Lua
+prelude — see §5 globals) work with plain generic-for.
 
 ### functions, calls, returns
 
@@ -383,6 +402,16 @@ builtins are pre-assigned at low slots; rust and C agree via a single source-of-
 ```
 
 rust crate reads this via build.rs or hand-mirrors it; either way, the slot numbers are wire-protocol.
+
+not every builtin slot holds a CFUNC. higher-order builtins (`all`, `foreach`,
+`ipairs`) are implemented in **Lua**, in a prelude the rust compiler prepends
+to every cart source (`rust/core_crate/src/prelude.lua`). their slots are
+reserved like any other builtin, but `p386_register_builtins` leaves them nil
+(NULL func in `p386_builtin_defs`); the compiled prelude's `function all(t)`
+etc. SETGLOBALs closures into them when the main chunk runs. this is required
+because a CFUNC cannot re-enter the bytecode interpreter to invoke a user
+callback — there is deliberately no reentrant vm_run (future coroutine work
+depends on its absence).
 
 GETGLOBAL/SETGLOBAL are O(1) loads:
 

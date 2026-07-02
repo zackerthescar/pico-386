@@ -229,3 +229,31 @@ end
 - do NOT "fix" p386_vm_call_global's state resets or add reentrant vm_run — out of scope,
   coroutines depend on this staying non-reentrant.
 - if qemu tests hang, bump TIMEOUT env; serial log lands in test_serial.log.
+
+## post-implementation notes (deviations found during the work)
+
+- the plan missed a latent compiler bug that step 3 exposed: explicit `return`
+  statements never emitted CLOSE, so `return function() ... end` handed the
+  caller a closure whose upvalues still pointed into the dead frame's value
+  stack registers — which the very next CALL's callee frame reuses, silently
+  corrupting the captures. only the fall-off-the-end epilogue (pop_scope)
+  closed upvalues. this is exactly the shape of `all(t)`'s returned iterator,
+  so `for v in all(t)` mis-iterated until fixed. fix: compile_return now emits
+  `CLOSE R0` (when the frame has captured locals) before every explicit
+  RETURN; in the fixed-return path the CLOSE goes before the shift-down MOVEs
+  because those overwrite R0.. themselves. see
+  `close_frame_upvalues_for_return` in compiler.rs.
+- the shared frame-push factoring worked cleanly (no 60-line duplication
+  needed): op_call's `.lua_func` tail now flows into `call_push_lua_frame`,
+  which reads func-reg/nargs/want_rets/return_reg from `scratch_a` slots
+  0/4/8/20 (slots 12/16 were already used by the arg-copy/vararg code).
+- ipairs did NOT need descoping: the compiler handles the two-value closure
+  return fine (`return i,t[i]` → `RETURN b=3`, want_rets=2 from TFORCALL).
+- grammar needed no changes: `+=`, `if (x) return y`, and prelude-before-
+  header-comments all parse (the `_` whitespace rule already skips comments
+  anywhere, so `header_comment` tolerance was moot).
+- integration + carts modes fail identically before and after this work
+  (pre-existing: test carts call unimplemented lifecycle/builtin surface —
+  `_init` etc. are nil in TESTCART/PTOOLCRT/CPARSE; "expected function" traps
+  come from main.c calling nil lifecycle globals). baseline log preserved at
+  docs/carts_baseline_prechange.log.
