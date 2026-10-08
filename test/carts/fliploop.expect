@@ -1,0 +1,5 @@
+# Probes for fliploop.p8. P386_FRAMES=2 stops after the second flip(),
+# so the screen shows the second frame: the box at x=8..15.
+10 63 10   # second frame's box
+3 63 2     # first frame's box is gone (cls(2) each frame)
+20 63 2    # background

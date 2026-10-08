@@ -1,5 +1,9 @@
 ;
-; vga.asm - VGA Mode X (320x400) with pixel-doubled PICO-8 blit
+; vga.asm - VGA Mode X, 400 lines at 70 Hz, each row scanned 3 times (320
+; x 133 logical rows), with a pixel-doubled PICO-8 blit. Each PICO-8 pixel
+; is 2 Mode X pixels wide and 3 scanlines tall: about 1.1:1 on a 4:3 screen
+; (2 scanlines would be 1.67:1). Hardware primitives only: page rotation and
+; retrace policy live in vga_page.c.
 ;
 ; Object format: ELF32 (assemble with `nasm -f elf32`).
 ; Linked by wlink alongside OMF C objects; symbols carry the
@@ -33,13 +37,14 @@
 %define CRTC_VRETRACE_END 0x11
 
 %define VRAM_BASE       0xA0000
-%define PAGE1_OFFSET    0x7D00          ; 80*400 = 32000 = 0x7D00
 %define ROW_STRIDE      80              ; 320/4 bytes per Mode X row
 
-; Viewport: 256x256 centered in 320x400
+; Viewport: 256x128 Mode X rows. Each row shows as 3 scanlines, so the image
+; is 256 x 384 of the 400 visible lines. Row 3 is the top: 9 scanlines above,
+; 7 below (rows are 3 lines, so it cannot be exactly centered).
 %define VIEW_X          32              ; (320-256)/2 = 32, aligned to 4
-%define VIEW_Y          72              ; (400-256)/2 = 72
-%define VIEW_START      (VIEW_Y * ROW_STRIDE + VIEW_X / 4) ; 72*80+8 = 5768
+%define VIEW_Y          3
+%define VIEW_START      (VIEW_Y * ROW_STRIDE + VIEW_X / 4) ; 3*80+8 = 248
 %define BLIT_WIDTH      64              ; 256/4 = 64 bytes per row
 
 ; --------------------------------------------------------------------------
@@ -84,16 +89,6 @@ _p8_palette_rgb6:
     db 29, 17, 25          ; 29: #754665
     db 63, 27, 22          ; 30: #FF6E59
     db 63, 39, 32          ; 31: #FF9D81
-
-; --------------------------------------------------------------------------
-; .bss - internal buffers
-; --------------------------------------------------------------------------
-section .bss
-
-align 16
-split_lo:   resb 8192                  ; low-nibble expanded buffer
-split_hi:   resb 8192                  ; high-nibble expanded buffer
-back_page:  resd 1                     ; VRAM offset of current back buffer
 
 ; --------------------------------------------------------------------------
 ; .text - VGA functions
@@ -147,14 +142,16 @@ _vga_set_palette:
     ret
 
 ; ==========================================================================
-; void vga_init(void)
-; Set up Mode X 320x400 + program PICO-8 palette
+; void vga_mode_init(void)
+; Set up Mode X with 3 scanlines per row + program PICO-8 palette.
+; Clears all of VRAM and leaves page offset 0 on screen.
 ; ==========================================================================
-global _vga_init:function
-_vga_init:
+global _vga_mode_init:function
+_vga_mode_init:
     push ebp
     mov  ebp, esp
     push ebx
+    push edi                        ; clobbered by rep stosd
 
     ; --- Step 1: Set Mode 13h baseline via BIOS ---
     mov  eax, 0x0013
@@ -184,7 +181,7 @@ _vga_init:
     mov  ecx, 16384                 ; 64KB / 4 = 16384 dwords
     rep  stosd
 
-    ; --- Step 5: CRTC adjustments for 320x400 ---
+    ; --- Step 5: CRTC adjustments for unchained Mode X ---
     mov  dx, CRTC_INDEX
 
     ; Disable underline / doubleword mode
@@ -195,176 +192,130 @@ _vga_init:
     mov  ax, 0xE317                 ; index 0x17, data 0xE3
     out  dx, ax
 
-    ; Max Scan Line: clear bits 0-4 (no double-scan), keep bit 6
+    ; Max Scan Line: scan each row 3 times (bits 0-4 = 2), keep bit 6.
+    ; The blit writes each PICO-8 row once; the CRTC repeats it.
     mov  al, CRTC_MAX_SCAN
     out  dx, al
     inc  dx                         ; dx = CRTC_DATA
     in   al, dx
     and  al, 0xE0                   ; clear bits 0-4
-    or   al, 0x40                   ; set bit 6 (line compare bit 9)
+    or   al, 0x42                   ; bit 6 (line compare bit 9) + scan x3
     out  dx, al
 
-    ; --- Step 6: Initialize double-buffer state ---
-    mov  dword [back_page], PAGE1_OFFSET
-
-    ; --- Step 7: Program PICO-8 palette (32 colors) ---
+    ; --- Step 6: Program PICO-8 palette (32 colors) ---
     ; Push params for vga_set_palette(p8_palette_rgb6, 32)
     push dword 32
     push dword _p8_palette_rgb6
     call _vga_set_palette
     add  esp, 8
 
+    pop  edi
     pop  ebx
     mov  esp, ebp
     pop  ebp
     ret
 
 ; ==========================================================================
-; void vga_flip(void)
-; Wait for vretrace, flip display to back page, swap pages
+; void vga_show_page(uint32_t page_offset)
+; Point the CRTC start address at page_offset. Does not wait for retrace.
+;
+; Most VGAs latch the start address at the start of vertical retrace, so it
+; must be written while the display is active: then the new page shows at
+; the next retrace, and any retrace seen after this call means the latch
+; happened. Interrupts are off between the check and the writes so an IRQ
+; cannot push the writes into blanking.
 ; ==========================================================================
-global _vga_flip:function
-_vga_flip:
+global _vga_show_page:function
+_vga_show_page:
     push ebp
     mov  ebp, esp
+    push ebx
 
-    ; --- Wait for vertical retrace ---
+    mov  ebx, [ebp+8]               ; page_offset
+    pushfd
+
+.wait_display:
+    popfd                           ; let pending IRQs in between polls
+    pushfd
+    cli
     mov  dx, INPUT_STATUS_1
-
-    ; Wait until NOT in retrace (catch leading edge)
-.wait_not_retrace:
     in   al, dx
-    test al, 0x08
-    jnz  .wait_not_retrace
-
-    ; Wait until IN retrace
-.wait_retrace:
-    in   al, dx
-    test al, 0x08
-    jz   .wait_retrace
-
-    ; --- Set CRTC Start Address to back_page ---
-    mov  ebx, [back_page]
+    test al, 0x01                   ; 1 = horizontal or vertical blanking
+    jnz  .wait_display
 
     mov  dx, CRTC_INDEX
     mov  al, CRTC_START_HI
-    out  dx, al
-    inc  dx
-    mov  al, bh                     ; high byte of back_page
-    out  dx, al
-
-    dec  dx
+    mov  ah, bh
+    out  dx, ax
     mov  al, CRTC_START_LO
-    out  dx, al
-    inc  dx
-    mov  al, bl                     ; low byte of back_page
-    out  dx, al
+    mov  ah, bl
+    out  dx, ax
 
-    ; --- Swap back page ---
-    xor  ebx, PAGE1_OFFSET
-    mov  [back_page], ebx
-
+    popfd                           ; restore caller's IF
+    pop  ebx
     mov  esp, ebp
     pop  ebp
     ret
 
 ; ==========================================================================
-; void vga_blit(const void *screen_buf)
-; Pixel-double 128x128 4bpp PICO-8 screen to 256x256 in Mode X back buffer
+; int vga_in_retrace(void)
+; Nonzero while the display is in vertical retrace.
 ; ==========================================================================
-global _vga_blit:function
-_vga_blit:
+global _vga_in_retrace:function
+_vga_in_retrace:
+    mov  dx, INPUT_STATUS_1
+    in   al, dx
+    and  eax, 0x08
+    ret
+
+; ==========================================================================
+; void vga_blit_page(const void *screen_buf, uint32_t page_offset)
+; Pixel-double the 128x128 4bpp PICO-8 screen to 256x128 Mode X rows in the
+; page at page_offset. The CRTC shows each row as 3 scanlines.
+;
+; Each screen dword holds 8 pixels, low nibble = left. In planes 0+1 a VRAM
+; byte is the left pixel of a pair (doubled across 2 planes), in planes 2+3
+; the right one. So pass 1 writes v & 0x0F0F0F0F and pass 2 writes
+; (v >> 4) & 0x0F0F0F0F straight from the screen, with no staging buffer.
+; Each 64-byte row is unrolled (16 dwords).
+; ==========================================================================
+%macro BLIT_PASS 2                      ; %1 = map mask word, %2 = shift
+    mov  dx, SEQ_INDEX
+    mov  ax, %1
+    out  dx, ax
+
+    mov  esi, [ebp+8]                   ; PICO-8 screen
+    mov  eax, [ebp+12]                  ; page_offset
+    lea  edi, [VRAM_BASE + eax + VIEW_START]
+    mov  ecx, 128                       ; rows
+%%row:
+%assign i 0
+%rep 16
+    mov  eax, [esi + i]
+%if %2
+    shr  eax, 4
+%endif
+    and  eax, ebx
+    mov  [edi + i], eax
+%assign i i+4
+%endrep
+    add  esi, BLIT_WIDTH
+    add  edi, ROW_STRIDE
+    dec  ecx
+    jnz  %%row
+%endmacro
+
+global _vga_blit_page:function
+_vga_blit_page:
     push ebp
     mov  ebp, esp
     push ebx
     push esi
     push edi
 
-    ; ======================================================================
-    ; Phase 1: Nibble split (system RAM → split_lo / split_hi)
-    ; ======================================================================
-    mov  esi, [ebp+8]              ; source: PICO-8 screen buffer (8192 bytes)
-    mov  edi, split_lo
-    mov  ebx, split_hi
-    mov  ecx, 2048                  ; 8192 / 4 = 2048 dword iterations
-
-.split_loop:
-    mov  eax, [esi]                 ; load 4 packed bytes
-    mov  edx, eax
-
-    and  eax, 0x0F0F0F0F           ; low nibbles (pixel A = left)
-    shr  edx, 4
-    and  edx, 0x0F0F0F0F           ; high nibbles (pixel B = right)
-
-    mov  [edi], eax
-    mov  [ebx], edx
-
-    add  esi, 4
-    add  edi, 4
-    add  ebx, 4
-    dec  ecx
-    jnz  .split_loop
-
-    ; ======================================================================
-    ; Phase 2: Blit planes 0+1 (low nibbles = doubled left pixel)
-    ; ======================================================================
-    mov  dx, SEQ_INDEX
-    mov  ax, 0x0302                 ; Map Mask = 0x03 (planes 0+1)
-    out  dx, ax
-
-    mov  esi, split_lo
-    mov  eax, [back_page]
-    lea  edi, [VRAM_BASE + eax + VIEW_START]
-    mov  ebx, 128                   ; 128 source rows
-
-.blit_lo_row:
-    ; Write row N
-    push esi
-    mov  ecx, 16                    ; 64 bytes = 16 dwords
-    rep  movsd
-    pop  esi                        ; rewind source
-
-    ; EDI is now at row N + 64 bytes; advance to row N+1 start
-    add  edi, ROW_STRIDE - BLIT_WIDTH  ; +16
-
-    ; Write row N+1 (same data = vertical doubling)
-    mov  ecx, 16
-    rep  movsd
-    ; ESI now points to next source row (advanced by 64)
-
-    ; Advance EDI to row N+2 start
-    add  edi, ROW_STRIDE - BLIT_WIDTH
-
-    dec  ebx
-    jnz  .blit_lo_row
-
-    ; ======================================================================
-    ; Phase 3: Blit planes 2+3 (high nibbles = doubled right pixel)
-    ; ======================================================================
-    mov  dx, SEQ_INDEX
-    mov  ax, 0x0C02                 ; Map Mask = 0x0C (planes 2+3)
-    out  dx, ax
-
-    mov  esi, split_hi
-    mov  eax, [back_page]
-    lea  edi, [VRAM_BASE + eax + VIEW_START]
-    mov  ebx, 128
-
-.blit_hi_row:
-    push esi
-    mov  ecx, 16
-    rep  movsd
-    pop  esi
-
-    add  edi, ROW_STRIDE - BLIT_WIDTH
-
-    mov  ecx, 16
-    rep  movsd
-
-    add  edi, ROW_STRIDE - BLIT_WIDTH
-
-    dec  ebx
-    jnz  .blit_hi_row
+    mov  ebx, 0x0F0F0F0F
+    BLIT_PASS 0x0302, 0                 ; planes 0+1: left pixels
+    BLIT_PASS 0x0C02, 1                 ; planes 2+3: right pixels
 
     pop  edi
     pop  esi

@@ -92,12 +92,13 @@ typedef struct P386ProtoEntry {
     uint32_t bytecode_len;
     uint32_t consts_off;
     uint32_t upvals_off;
-    uint8_t  n_consts;
+    uint8_t  reserved0;
     uint8_t  n_params;
     uint8_t  n_regs;
     uint8_t  n_upvalues;
     uint8_t  flags;
-    uint8_t  reserved[3];
+    uint8_t  reserved1;
+    uint16_t n_consts;
 } P386ProtoEntry;
 
 typedef struct P386StringEntry {

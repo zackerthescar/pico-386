@@ -286,33 +286,75 @@ impl Compiler {
     }
 
     // ── constants ──
-    fn add_const(&mut self, c: Constant) -> u8 {
+    /// Add a constant to the pool of the current function. Return its index.
+    /// Equal constants share one entry. The pool holds up to 65535 entries.
+    fn add_const(&mut self, c: Constant) -> u16 {
         let fs = self.fs_mut();
         if let Some(i) = fs.constants.iter().position(|old| const_eq(old, &c)) {
-            if i < 128 {
-                return i as u8;
-            }
+            return i as u16;
         }
-        if fs.constants.len() >= 128 {
+        if fs.constants.len() >= 0xffff {
             fs.failed = true;
             return 0;
         }
-        let idx = fs.constants.len() as u8;
+        let idx = fs.constants.len() as u16;
         fs.constants.push(c);
         idx
+    }
+
+    /// Emit `R[dst] = R[obj][name]`. GETFIELD takes an 8-bit constant index.
+    /// For a higher index, load the key into a temp and use GETTABLE.
+    fn emit_getfield(&mut self, dst: u8, obj: u8, name: Name) {
+        let k = self.add_name_const(name);
+        if k <= 0xff {
+            self.emit(abc(P386_OP_GETFIELD, dst, obj, k as u8));
+            return;
+        }
+        let save = self.freereg();
+        let kr = self.reserve();
+        self.emit(abx(P386_OP_LOADK, kr, k));
+        let kc = self.rk_reg_checked(kr);
+        self.emit(abc(P386_OP_GETTABLE, dst, rk_reg(obj), kc));
+        self.set_freereg(save);
+    }
+
+    /// Emit `R[obj][name] = RK(val)`. SETFIELD takes an 8-bit constant index
+    /// for the name. For a higher index, load the key into a temp and use
+    /// SETTABLE.
+    fn emit_setfield(&mut self, obj: u8, name: Name, val: u8) {
+        let k = self.add_name_const(name);
+        if k <= 0xff {
+            self.emit(abc(P386_OP_SETFIELD, obj, k as u8, val));
+            return;
+        }
+        let save = self.freereg();
+        let kr = self.reserve();
+        self.emit(abx(P386_OP_LOADK, kr, k));
+        let kc = self.rk_reg_checked(kr);
+        self.emit(abc(P386_OP_SETTABLE, obj, kc, val));
+        self.set_freereg(save);
+    }
+
+    /// RK byte for register `r`. An RK byte reaches registers 0..127 only.
+    fn rk_reg_checked(&mut self, r: u8) -> u8 {
+        if r >= 128 {
+            self.fail();
+        }
+        rk_reg(r)
     }
 
     fn name_bytes(&self, n: Name) -> &[u8] {
         self.names.resolve(n)
     }
 
-    fn add_name_const(&mut self, n: Name) -> u8 {
+    fn add_name_const(&mut self, n: Name) -> u16 {
         let bytes = self.name_bytes(n).to_vec();
         self.add_const(Constant::Str(bytes))
     }
 
-    fn global_slot(&mut self, n: Name) -> u8 {
-        match self.name_bytes(n) {
+    /// Fixed slot of a PICO-8 builtin or lifecycle callback, by name.
+    fn builtin_slot(&self, n: Name) -> Option<u8> {
+        Some(match self.name_bytes(n) {
             b"print" => P386_BUILTIN_PRINT,
             b"cls" => P386_BUILTIN_CLS,
             b"pset" => P386_BUILTIN_PSET,
@@ -322,7 +364,7 @@ impl Compiler {
             b"rectfill" | b"rectf" => P386_BUILTIN_RECTF,
             b"circfill" => P386_BUILTIN_CIRCFILL,
             b"spr" => P386_BUILTIN_SPR,
-            b"map" => P386_BUILTIN_MAP,
+            b"map" | b"mapdraw" => P386_BUILTIN_MAP,
             b"btn" => P386_BUILTIN_BTN,
             b"btnp" => P386_BUILTIN_BTNP,
             b"sfx" => P386_BUILTIN_SFX,
@@ -368,22 +410,65 @@ impl Compiler {
             b"sub" => P386_BUILTIN_SUB,
             b"all" => P386_BUILTIN_ALL,
             b"foreach" => P386_BUILTIN_FOREACH,
+            b"sspr" => P386_BUILTIN_SSPR,
+            b"mget" => P386_BUILTIN_MGET,
+            b"mset" => P386_BUILTIN_MSET,
+            b"fget" => P386_BUILTIN_FGET,
+            b"fset" => P386_BUILTIN_FSET,
+            b"sget" => P386_BUILTIN_SGET,
+            b"sset" => P386_BUILTIN_SSET,
+            b"camera" => P386_BUILTIN_CAMERA,
+            b"clip" => P386_BUILTIN_CLIP,
+            b"pal" => P386_BUILTIN_PAL,
+            b"palt" => P386_BUILTIN_PALT,
+            b"circ" => P386_BUILTIN_CIRC,
+            b"oval" => P386_BUILTIN_OVAL,
+            b"ovalfill" => P386_BUILTIN_OVALFILL,
+            b"fillp" => P386_BUILTIN_FILLP,
+            b"color" => P386_BUILTIN_COLOR,
+            b"cursor" => P386_BUILTIN_CURSOR,
+            b"time" | b"t" => P386_BUILTIN_TIME,
+            b"stat" => P386_BUILTIN_STAT,
+            b"flip" => P386_BUILTIN_FLIP,
+            b"printh" => P386_BUILTIN_PRINTH,
+            b"type" => P386_BUILTIN_TYPE,
+            b"unpack" => P386_BUILTIN_UNPACK,
+            b"pack" => P386_BUILTIN_PACK,
+            b"select" => P386_BUILTIN_SELECT,
+            b"split" => P386_BUILTIN_SPLIT,
+            b"rawget" => P386_BUILTIN_RAWGET,
+            b"rawset" => P386_BUILTIN_RAWSET,
+            b"rawequal" => P386_BUILTIN_RAWEQUAL,
+            b"rawlen" => P386_BUILTIN_RAWLEN,
+            b"memcpy" => P386_BUILTIN_MEMCPY,
+            b"memset" => P386_BUILTIN_MEMSET,
+            b"reload" => P386_BUILTIN_RELOAD,
+            b"cstore" => P386_BUILTIN_CSTORE,
+            b"setmetatable" => P386_BUILTIN_SETMETATABLE,
+            b"getmetatable" => P386_BUILTIN_GETMETATABLE,
             b"_init" => P386_GLOBAL_INIT,
             b"_update" => P386_GLOBAL_UPDATE,
             b"_update60" => P386_GLOBAL_UPDATE60,
             b"_draw" => P386_GLOBAL_DRAW,
-            _ => {
-                if let Some(i) = self.globals.iter().position(|&x| x == n) {
-                    P386_USER_GLOBAL_BASE.saturating_add(i as u8)
-                } else if self.globals.len() < (256 - P386_USER_GLOBAL_BASE as usize) {
-                    let slot = P386_USER_GLOBAL_BASE.saturating_add(self.globals.len() as u8);
-                    self.globals.push(n);
-                    slot
-                } else {
-                    self.fail();
-                    P386_USER_GLOBAL_BASE
-                }
-            }
+            _ => return None,
+        })
+    }
+
+    /// Global slot for a name: a builtin's fixed slot, or the next free user
+    /// slot (P386_USER_GLOBAL_BASE .. P386_GLOBAL_SLOTS).
+    fn global_slot(&mut self, n: Name) -> u16 {
+        if let Some(slot) = self.builtin_slot(n) {
+            return slot as u16;
+        }
+        if let Some(i) = self.globals.iter().position(|&x| x == n) {
+            return P386_USER_GLOBAL_BASE as u16 + i as u16;
+        }
+        if self.globals.len() < (P386_GLOBAL_SLOTS - P386_USER_GLOBAL_BASE as u16) as usize {
+            self.globals.push(n);
+            P386_USER_GLOBAL_BASE as u16 + (self.globals.len() - 1) as u16
+        } else {
+            self.fail();
+            P386_USER_GLOBAL_BASE as u16
         }
     }
 
@@ -517,7 +602,7 @@ impl Compiler {
                 } else {
                     let r = self.expr_to_anyreg(value);
                     let slot = self.global_slot(*n);
-                    self.emit(abc(P386_OP_SETGLOBAL, r, slot, 0));
+                    self.emit(abx(P386_OP_SETGLOBAL, r, slot));
                 }
             }
             _ => {
@@ -626,7 +711,7 @@ impl Compiler {
             self.compile_expr_into(step, base + 2);
         } else {
             let k = self.add_const(Constant::Num(1 << 16));
-            self.emit(abx(P386_OP_LOADK, base + 2, k as u16));
+            self.emit(abx(P386_OP_LOADK, base + 2, k));
         }
         self.set_freereg(base + 3);
         self.note_reg(base + 3);
@@ -791,9 +876,8 @@ impl Compiler {
             if let Some(m) = name.method {
                 // all parts are fields, method is final field
                 for f in &fields {
-                    let k = self.add_name_const(*f);
                     let next = self.reserve();
-                    self.emit(abc(P386_OP_GETFIELD, next, obj, k));
+                    self.emit_getfield(next, obj, *f);
                     obj = next;
                 }
                 last_field = m;
@@ -801,15 +885,13 @@ impl Compiler {
                 // last part is the field we store into
                 let (init, lastp) = fields.split_at(fields.len() - 1);
                 for f in init {
-                    let k = self.add_name_const(*f);
                     let next = self.reserve();
-                    self.emit(abc(P386_OP_GETFIELD, next, obj, k));
+                    self.emit_getfield(next, obj, *f);
                     obj = next;
                 }
                 last_field = lastp[0];
             }
-            let k = self.add_name_const(last_field);
-            self.emit(abc(P386_OP_SETFIELD, obj, k, rk_reg(dst)));
+            self.emit_setfield(obj, last_field, rk_reg(dst));
         }
     }
 
@@ -866,7 +948,7 @@ impl Compiler {
     fn compile_print(&mut self, values: &[Expr]) {
         let base = self.freereg();
         let func = self.reserve();
-        self.emit(abc(P386_OP_GETGLOBAL, func, P386_BUILTIN_PRINT, 0));
+        self.emit(abx(P386_OP_GETGLOBAL, func, P386_BUILTIN_PRINT as u16));
         let n = values.len().min(248) as u8;
         for (i, e) in values.iter().take(248).enumerate() {
             let want = base + 1 + i as u8;
@@ -932,8 +1014,7 @@ impl Compiler {
         let func = self.reserve();
         let self_reg = self.reserve();
         self.compile_expr_into(&call.object, self_reg);
-        let method = self.add_name_const(call.method);
-        self.emit(abc(P386_OP_GETFIELD, func, self_reg, method));
+        self.emit_getfield(func, self_reg, call.method);
         let b = match self.compile_args(&call.args, self_reg + 1) {
             ArgCount::Fixed(n) => n.saturating_add(2),
             ArgCount::Open => 0,
@@ -961,8 +1042,7 @@ impl Compiler {
         let func = self.reserve();
         let self_reg = self.reserve();
         self.compile_expr_into(&call.object, self_reg);
-        let method = self.add_name_const(call.method);
-        self.emit(abc(P386_OP_GETFIELD, func, self_reg, method));
+        self.emit_getfield(func, self_reg, call.method);
         // self is the first argument; remaining args follow
         let b = match self.compile_args(&call.args, self_reg + 1) {
             ArgCount::Fixed(n) => n.saturating_add(2),
@@ -1101,11 +1181,11 @@ impl Compiler {
             }
             Expr::Number(n) => {
                 let k = self.add_const(Constant::Num(*n));
-                self.emit(abx(P386_OP_LOADK, dst, k as u16));
+                self.emit(abx(P386_OP_LOADK, dst, k));
             }
             Expr::Str(s) => {
                 let k = self.add_const(Constant::Str(s.clone()));
-                self.emit(abx(P386_OP_LOADK, dst, k as u16));
+                self.emit(abx(P386_OP_LOADK, dst, k));
             }
             Expr::Var(v) => return self.load_var_into(v, dst),
             Expr::BinOp(op, a, b) => self.compile_binop(*op, a, b, dst),
@@ -1203,9 +1283,8 @@ impl Compiler {
                     array_idx += 1 << 16;
                 }
                 TableField::NamedField(n, v) => {
-                    let k = self.add_name_const(*n);
                     let vr = self.expr_to_rk(v);
-                    self.emit(abc(P386_OP_SETFIELD, work, k, vr));
+                    self.emit_setfield(work, *n, vr);
                 }
                 TableField::IndexedField(k, v) => {
                     let kr = self.expr_to_rk(k);
@@ -1224,36 +1303,37 @@ impl Compiler {
             Expr::Number(n) => {
                 let k = self.add_const(Constant::Num(*n));
                 if k < 128 {
-                    return rk_const(k);
+                    return rk_const(k as u8);
                 }
             }
             Expr::Str(s) => {
                 let k = self.add_const(Constant::Str(s.clone()));
                 if k < 128 {
-                    return rk_const(k);
+                    return rk_const(k as u8);
                 }
             }
             Expr::True => {
                 let k = self.add_const(Constant::Bool(true));
                 if k < 128 {
-                    return rk_const(k);
+                    return rk_const(k as u8);
                 }
             }
             Expr::False => {
                 let k = self.add_const(Constant::Bool(false));
                 if k < 128 {
-                    return rk_const(k);
+                    return rk_const(k as u8);
                 }
             }
             Expr::Nil => {
                 let k = self.add_const(Constant::Nil);
                 if k < 128 {
-                    return rk_const(k);
+                    return rk_const(k as u8);
                 }
             }
             _ => {}
         }
-        rk_reg(self.expr_to_anyreg(e))
+        let r = self.expr_to_anyreg(e);
+        self.rk_reg_checked(r)
     }
 
     /// Evaluate expression into some register (a local's register when
@@ -1271,7 +1351,7 @@ impl Compiler {
     fn load_const_to_reg(&mut self, c: Constant) -> u8 {
         let r = self.reserve();
         let k = self.add_const(c);
-        self.emit(abx(P386_OP_LOADK, r, k as u16));
+        self.emit(abx(P386_OP_LOADK, r, k));
         r
     }
 
@@ -1295,7 +1375,7 @@ impl Compiler {
                     self.emit(abc(P386_OP_GETUPVAL, dst, uv, 0));
                 } else {
                     let slot = self.global_slot(*n);
-                    self.emit(abc(P386_OP_GETGLOBAL, dst, slot, 0));
+                    self.emit(abx(P386_OP_GETGLOBAL, dst, slot));
                 }
             }
             Var::Index(obj, key) => {
@@ -1314,8 +1394,7 @@ impl Compiler {
                     self.fs_mut().freereg = dst + 1;
                 }
                 let or = self.expr_to_anyreg(obj);
-                let k = self.add_name_const(*n);
-                self.emit(abc(P386_OP_GETFIELD, dst, or, k));
+                self.emit_getfield(dst, or, *n);
                 self.fs_mut().freereg = save.max(dst + 1);
             }
         }
@@ -1333,7 +1412,7 @@ impl Compiler {
                     self.emit(abc(P386_OP_SETUPVAL, src, uv, 0));
                 } else {
                     let slot = self.global_slot(*n);
-                    self.emit(abc(P386_OP_SETGLOBAL, src, slot, 0));
+                    self.emit(abx(P386_OP_SETGLOBAL, src, slot));
                 }
             }
             Var::Index(obj, key) => {
@@ -1343,8 +1422,7 @@ impl Compiler {
             }
             Var::Field(obj, n) => {
                 let or = self.expr_to_anyreg(obj);
-                let k = self.add_name_const(*n);
-                self.emit(abc(P386_OP_SETFIELD, or, k, rk_reg(src)));
+                self.emit_setfield(or, *n, rk_reg(src));
             }
         }
     }

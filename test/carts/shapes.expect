@@ -1,0 +1,35 @@
+# Probes for shapes.p8: <x> <y> <color>  # what it checks
+5 5 8      # rectfill inside
+10 5 1     # rectfill right edge +1 is background
+12 2 11    # rect corner
+19 9 11    # rect opposite corner
+15 5 1     # rect inside is empty
+22 2 12    # line start
+25 5 12    # line middle (45 degrees)
+29 9 12    # line end
+25 2 1     # line: off the diagonal
+36 6 9     # circfill center
+39 6 9     # circfill right extreme (r=3)
+36 3 9     # circfill top extreme
+40 6 1     # circfill: beyond radius
+49 6 10    # circ right extreme
+46 3 10    # circ top extreme
+46 6 1     # circ center not drawn
+56 4 14    # ovalfill center
+52 4 14    # ovalfill left edge, middle row
+51 4 1     # ovalfill: outside the box
+64 2 12   # fillp 0x5a5a: pattern bit 0
+65 2 7   # fillp 0x5a5a: pattern bit 1
+64 3 7   # fillp 0x5a5a: pattern bit 1
+65 3 12   # fillp 0x5a5a: pattern bit 0
+2 20 7    # print at x,y: 'h' pixel set
+3 20 1     # print at x,y: 'h' pixel clear
+2 30 9    # print at cursor: 'a' pixel set
+3 31 1     # print at cursor: 'a' pixel clear
+2 36 9    # next cursor line: 'b' pixel set
+3 37 1     # next cursor line: 'b' pixel clear
+101 40 10    # print with camera: 'c' pixel set
+100 40 1     # print with camera: 'c' pixel clear
+85 20 8    # line 4-arg form
+90 25 8    # line 2-arg form from the previous end (vertical)
+101 3 3    # pal(11,3) applies to rectfill

@@ -1,0 +1,27 @@
+# Probes for sprites.p8: <pico8 x> <pico8 y> <expected color>  # what it checks
+2 2 8      # map row 0, tile 1 (red)
+10 2 11    # map row 0, tile 2 (green)
+18 2 1     # map tile 0 is not drawn (background)
+26 2 8     # map row 0, tile 1
+2 10 11    # map row 1
+10 10 8    # map row 1
+10 34 11   # layers=2: tile 2 drawn
+2 34 1     # layers=2: tile 1 (flag 0 only) skipped
+2 42 11    # layers=2, row 1
+10 42 1    # layers=2, row 1: tile 1 skipped
+41 2 7     # spr 3: white half
+46 2 1     # spr 3: color 0 transparent
+57 2 1     # spr 3 flip_x: transparent half on the left
+62 2 7     # spr 3 flip_x: white half on the right
+41 17 1    # spr 4 flip_y: transparent half on top
+41 22 12   # spr 4 flip_y: blue half at the bottom
+75 3 10    # pal(8,10): red drawn as yellow
+83 3 8     # camera(-80,0): sprite at x80; pal() reset to red
+97 1 8     # sspr 2x: top-left
+110 14 8   # sspr 2x: bottom-right (16x16)
+112 8 1    # sspr 2x: just outside
+5 64 11    # clip: inside
+3 64 1     # clip: left of the rect
+6 66 1     # clip: below the rect (h=2)
+3 83 11    # map row 40 (shared memory at 0x1000)
+0 127 1    # background corner

@@ -5,10 +5,12 @@
 #include <stddef.h>
 #include "p386_bytecode.h"
 #include "p386_value.h"
+#include "p386_obj.h"
 
 #define P386_VALUE_STACK_SLOTS 4096
 #define P386_CALL_STACK_DEPTH  256
 #define P386_VARARG_STACK_SLOTS 256
+#define P386_GLOBAL_SLOTS      1024   /* GETGLOBAL/SETGLOBAL Bx range */
 
 #define P386_VM_OK          0
 #define P386_VM_HALTED      1
@@ -18,6 +20,7 @@
 #define P386_VM_ERR_DIV0   -4
 #define P386_VM_ERR_BOUNDS -5
 #define P386_VM_ERR_UNIMPL -6
+#define P386_VM_ERR_QUIT   -7    /* a builtin asked to stop (Esc in flip) */
 
 typedef struct P386LoadedProgram {
     const uint8_t *buf;
@@ -35,7 +38,10 @@ typedef struct P386CallFrame {
     uint32_t return_closure;
     uint8_t return_reg;
     uint8_t want_rets;
-    uint8_t padding[2];
+    /* Result fix-up on return (metamethods): 0 none, 1 to boolean,
+     * 2 to negated boolean. */
+    uint8_t post;
+    uint8_t padding;
     /* Caller's vararg window, restored when this frame returns. */
     uint32_t saved_vararg_base;
     uint32_t saved_vararg_count;
@@ -53,7 +59,7 @@ typedef struct P386VMState {
     P386Value *base;
     P386Value *top;
     P386Value *value_stack_end;
-    P386Value globals[256];
+    P386Value globals[P386_GLOBAL_SLOTS];
     const P386ProtoEntry *current_proto;
     const uint32_t *ip;
     uint32_t current_closure;
@@ -76,7 +82,7 @@ int p386_program_load(const uint8_t *buf, uint32_t size, P386LoadedProgram *out)
 void p386_vm_init(P386VMState *vm);
 int p386_vm_load(P386VMState *vm, const uint8_t *buf, uint32_t size);
 int p386_vm_run(P386VMState *vm);
-int p386_vm_call_global(P386VMState *vm, uint8_t slot, uint8_t nargs, uint8_t want_rets);
+int p386_vm_call_global(P386VMState *vm, uint16_t slot, uint8_t nargs, uint8_t want_rets);
 const char *p386_vm_status_name(int status);
 
 #endif

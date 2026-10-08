@@ -35,6 +35,8 @@
             gnumake
             python3
             binutils
+	    unzip
+            imagemagick
           ];
           zlib1211 = pkgs.fetchurl {
             url = "https://zlib.net/fossils/zlib-1.2.11.tar.gz";

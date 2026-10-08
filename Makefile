@@ -1,9 +1,12 @@
 CC 		= wcc386
 LD		= wlink
 ASM		= nasm
-CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3s
+CFLAGS 	= -i=include -i=zlib -bt=dos -ecc -3s -ox -s
 AFLAGS 	= -f elf32
 LFLAGS	= -ecc -bt=dos -bc
+# The VM state (~51 KB) lives on the stack in run_cart and in the tests, and
+# C code is built without stack checks (-s): give every EXE a large stack.
+LDOPTS	= option stack=256k
 
 RUST_TARGET	= i386-dos4gw.json
 RUST_OUT	= rust/target/i386-dos4gw/release
@@ -14,9 +17,15 @@ C_SRC	= 	src/main.c 					\
 			src/pico386.c				\
 			src/p386_loader.c			\
 			src/p386_obj.c				\
+			src/p386_meta.c				\
 			src/p386_builtins.c		\
 			src/mem.c 					\
 			src/print.c					\
+			src/input.c					\
+			src/gfx.c					\
+			src/kbd.c					\
+			src/timer.c					\
+			src/vga_page.c				\
 			src/cart.c 					\
 			src/pxa_compress_snippets.c	\
 			src/p8_compress.c
@@ -33,11 +42,16 @@ OUT		= dos/MAIN.EXE
 LIB_OBJS = 	src/pico386.obj				\
 			src/p386_loader.obj			\
 			src/p386_obj.obj			\
+			src/p386_meta.obj			\
 			src/p386_builtins.obj		\
 			src/mem.obj				\
+			src/input.obj				\
+			src/gfx.obj					\
 			src/p386_dispatch.obj		\
 			src/print.obj				\
 			src/vga.obj					\
+			src/vga_page.obj			\
+			src/timer.obj				\
 			src/cart.obj				\
 			src/pxa_compress_snippets.obj	\
 			src/p8_compress.obj			\
@@ -133,18 +147,24 @@ src/crt_shim.obj: src/crt_shim.c
 	$(CC) $(CFLAGS) -fo=$@ $<
 
 pico: wstub.exe dos $(OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
-	$(LD) system dos4g $(foreach obj,$(OBJS),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(OUT)
+	$(LD) system dos4g $(LDOPTS) $(foreach obj,$(OBJS),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(OUT)
 
 # Test binary — links test runner + shared libs (no main.obj, no vga.obj needed for tests but included for unload() etc.)
 test: wstub.exe dos $(TEST_OBJ) $(LIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
-	$(LD) system dos4g file $(TEST_OBJ) $(foreach obj,$(LIB_OBJS),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(TEST_OUT)
+	$(LD) system dos4g $(LDOPTS) file $(TEST_OBJ) $(foreach obj,$(LIB_OBJS),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(TEST_OUT)
 
-vm-test: wstub.exe dos $(VM_TEST_OBJ) src/p386_loader.obj src/p386_obj.obj src/p386_builtins.obj src/mem.obj src/p386_dispatch.obj src/serial.obj src/print.obj
-	$(LD) system dos4g file $(VM_TEST_OBJ) file src/p386_loader.obj file src/p386_obj.obj file src/p386_builtins.obj file src/mem.obj file src/p386_dispatch.obj file src/serial.obj file src/print.obj name $(VM_TEST_OUT)
+vm-test: wstub.exe dos $(VM_TEST_OBJ) src/p386_loader.obj src/p386_obj.obj src/p386_meta.obj src/p386_builtins.obj src/input.obj src/gfx.obj src/mem.obj src/p386_dispatch.obj src/serial.obj src/print.obj
+	$(LD) system dos4g $(LDOPTS) file $(VM_TEST_OBJ) file src/p386_loader.obj file src/p386_obj.obj file src/p386_meta.obj file src/p386_builtins.obj file src/input.obj file src/gfx.obj file src/mem.obj file src/p386_dispatch.obj file src/serial.obj file src/print.obj name $(VM_TEST_OUT)
+
+# Drawing benchmark — QEMU only (uses rdtsc; see test/bench_gfx_main.c)
+BENCH_OBJ	= test/bench_gfx_main.obj
+BENCH_OUT	= dos/BENCH.EXE
+bench: wstub.exe dos $(BENCH_OBJ) src/gfx.obj src/mem.obj src/vga.obj src/vga_page.obj src/timer.obj src/serial.obj src/print.obj
+	$(LD) system dos4g $(LDOPTS) file $(BENCH_OBJ) file src/gfx.obj file src/mem.obj file src/vga.obj file src/vga_page.obj file src/timer.obj file src/serial.obj file src/print.obj name $(BENCH_OUT)
 
 # VGA test binary — needs VGA + serial, minimal deps
-vga-test: wstub.exe dos $(VGA_TEST_OBJ) src/vga.obj src/serial.obj src/print.obj
-	$(LD) system dos4g file $(VGA_TEST_OBJ) file src/vga.obj file src/serial.obj file src/print.obj name $(VGA_TEST_OUT)
+vga-test: wstub.exe dos $(VGA_TEST_OBJ) src/vga.obj src/vga_page.obj src/timer.obj src/serial.obj src/print.obj
+	$(LD) system dos4g $(LDOPTS) file $(VGA_TEST_OBJ) file src/vga.obj file src/vga_page.obj file src/timer.obj file src/serial.obj file src/print.obj name $(VGA_TEST_OUT)
 
 $(ZLIB_LIB): $(ZLIB_DIR)/zconf.h
 	$(MAKE) $(ZLIB_OBJS)
@@ -169,8 +189,8 @@ $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c $(ZLIB_DIR)/zconf.h
 	$(CC) -bt=dos -3s -ecc -od -fo=$@ $<
 
 clean:
-	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM) $(TEST_OBJ) $(VM_TEST_OBJ) $(VGA_TEST_OBJ) dos/*.exe *.err
+	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM) $(TEST_OBJ) $(VM_TEST_OBJ) $(VGA_TEST_OBJ) $(BENCH_OBJ) dos/*.exe *.err
 	cd rust && cargo clean
 
 FORCE:
-.PHONY: all clean pico test vm-test vga-test layout-check FORCE
+.PHONY: all clean pico test vm-test vga-test bench layout-check FORCE

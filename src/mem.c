@@ -1,5 +1,6 @@
 #include <string.h>
 #include "mem.h"
+#include "gfx.h"
 
 void p8_ram_init(void) {
     uint8_t i;
@@ -15,4 +16,5 @@ void p8_ram_init(void) {
     p8_ram.mem.hw.map_width = 128;
     p8_ram.mem.hw.btnp_delay = 15;
     p8_ram.mem.hw.btnp_repeat = 4;
+    gfx_reset_pal();
 }

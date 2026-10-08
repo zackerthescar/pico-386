@@ -42,12 +42,21 @@ void main(void) {
     p8_ram.mem.draw.clip_x1 = 128;
     p8_ram.mem.draw.clip_y1 = 128;
 
-    fill_color_bars();
-    debug_serial_print("VGA_TEST: pattern filled\n");
-
     vga_init();
     debug_serial_print("VGA_TEST: mode x init done\n");
 
+    /* Rotate through all three pages: two solid frames (pages 1, 2), then
+     * the bars on page 0. A page offset or flip-order bug changes the
+     * final screenshot. */
+    memset(p8_ram.mem.screen, 0x88, sizeof(p8_ram.mem.screen));
+    vga_blit(p8_ram.mem.screen);
+    vga_flip();
+    memset(p8_ram.mem.screen, 0xCC, sizeof(p8_ram.mem.screen));
+    vga_blit(p8_ram.mem.screen);
+    vga_flip();
+
+    fill_color_bars();
+    debug_serial_print("VGA_TEST: pattern filled\n");
     vga_blit(p8_ram.mem.screen);
     vga_flip();
     debug_serial_print("VGA_TEST: blit+flip done\n");

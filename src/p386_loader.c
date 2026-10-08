@@ -120,7 +120,7 @@ int p386_vm_load(P386VMState *vm, const uint8_t *buf, uint32_t size) {
     return 1;
 }
 
-int p386_vm_call_global(P386VMState *vm, uint8_t slot, uint8_t nargs, uint8_t want_rets) {
+int p386_vm_call_global(P386VMState *vm, uint16_t slot, uint8_t nargs, uint8_t want_rets) {
     P386Closure *closure;
     uint8_t i;
 
@@ -175,6 +175,7 @@ const char *p386_vm_status_name(int status) {
     case P386_VM_ERR_DIV0: return "division by zero";
     case P386_VM_ERR_BOUNDS: return "bounds error";
     case P386_VM_ERR_UNIMPL: return "unimplemented opcode";
+    case P386_VM_ERR_QUIT: return "quit requested";
     default: return "unknown";
     }
 }

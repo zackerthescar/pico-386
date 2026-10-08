@@ -98,6 +98,19 @@ int p386_string_eq(const P386String *a, const P386String *b) {
     return a->len == 0 || memcmp(a->data, b->data, a->len) == 0;
 }
 
+/* Byte-wise (unsigned) lexicographic compare. A prefix sorts first.
+ * A null pointer counts as the empty string. */
+int p386_string_cmp(const P386String *a, const P386String *b) {
+    uint32_t la = a ? a->len : 0;
+    uint32_t lb = b ? b->len : 0;
+    uint32_t n = la < lb ? la : lb;
+    if (n) {
+        int r = memcmp(a->data, b->data, n);
+        if (r) return r;
+    }
+    return la < lb ? -1 : (la > lb ? 1 : 0);
+}
+
 /* ---------- num -> string ------------------------------------------- */
 
 /* 16.16 fixed-point -> decimal. Format "-?int(.frac)?".
@@ -202,6 +215,7 @@ P386Table *p386_table_new(uint32_t array_hint, uint32_t hash_hint) {
     t->cap = cap;
     t->len = 0;
     t->array_len = 0;
+    t->metatable = 0;
     return t;
 }
 

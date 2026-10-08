@@ -71,7 +71,7 @@ an "RK" byte is either a register reference or a constant pool reference:
 - if `byte & 0x80`: it's constants[byte & 0x7f]. (constant index 0..127.)
 - else: it's R[byte & 0x7f]. (register index 0..127.)
 
-so when an opcode uses RK on B and C, each function effectively has **128 registers** and **128 constants per pool**. for opcodes that don't use RK on a given operand, the full 8 bits are available.
+so an RK operand reaches only **registers 0..127** and **constants 0..127**. a function can hold up to 65535 constants. the compiler uses an RK constant only when its index is below 128. for a higher index it does LOADK (16-bit Bx) into a temp register and uses the register. for opcodes that don't use RK on a given operand, the full 8 bits are available.
 
 ### multi-byte operands
 
@@ -79,7 +79,7 @@ certain opcodes treat B|C as a single 16-bit value:
 
 | field name | encoding              | range          | used by              |
 | ---------- | --------------------- | -------------- | -------------------- |
-| `Bx`       | `B \| (C << 8)`       | 0..65535       | LOADK, CLOSURE       |
+| `Bx`       | `B \| (C << 8)`       | 0..65535       | LOADK, CLOSURE, GETGLOBAL, SETGLOBAL |
 | `sBx`      | sign-extended `Bx`    | -32768..32767  | JMP, JMPF, JMPT, FORPREP, FORLOOP, TFORLOOP |
 
 sBx is the relative jump offset, measured from the **end** of the instruction (so `sBx = 0` is a no-op jump).
@@ -104,8 +104,8 @@ notation: `R[X]` = current frame's register X. `RK(X)` = `R[X & 0x7f]` if `X & 0
 
 | op        | hex  | operands | semantics              |
 | --------- | ---- | -------- | ---------------------- |
-| GETGLOBAL | 0x10 | A, B     | `R[A] = globals[B]`    |
-| SETGLOBAL | 0x11 | A, B     | `globals[B] = R[A]`    |
+| GETGLOBAL | 0x10 | A, Bx    | `R[A] = globals[Bx]`   |
+| SETGLOBAL | 0x11 | A, Bx    | `globals[Bx] = R[A]`   |
 
 B is 8-bit slot index (0..255). compile-time-assigned. builtin slots reserved at low indices (see `include/builtins.h`).
 
@@ -125,9 +125,9 @@ B is 8-bit slot index (0..255). compile-time-assigned. builtin slots reserved at
 | GETTABLE | 0x19 | A, B, C   | `R[A] = R[B][RK(C)]`                                   |
 | SETTABLE | 0x1A | A, B, C   | `R[A][RK(B)] = RK(C)`                                  |
 | GETFIELD | 0x1B | A, B, C   | `R[A] = R[B][K[C]]` (C is constant idx, must be STR)   |
-| SETFIELD | 0x1C | A, B, C   | `R[A][K[B]] = R[C]` (B is constant idx, must be STR)   |
+| SETFIELD | 0x1C | A, B, C   | `R[A][K[B]] = RK(C)` (B is constant idx, must be STR)  |
 
-GETFIELD/SETFIELD are the fast-path for `t.field` syntax. C in GETFIELD and B in SETFIELD are full 8-bit constant indices (no K-flag, always constant — the field name).
+GETFIELD/SETFIELD are the fast-path for `t.field` syntax. C in GETFIELD and B in SETFIELD are full 8-bit constant indices (no K-flag, always constant — the field name). C in SETFIELD is an RK operand: a constructor field such as `{x=0}` stores a constant directly. when the name has a constant index above 255, the compiler emits LOADK of the name into a temp register and uses GETTABLE/SETTABLE instead.
 
 ### arithmetic (16.16 fixed-point on NUM)
 
@@ -171,7 +171,7 @@ operate on the raw i32 value (no fixed-point shift), matching PICO-8 semantics.
 | GT | 0x35 | A, B, C   | `R[A] = (RK(B) > RK(C))`   |
 | GE | 0x36 | A, B, C   | `R[A] = (RK(B) >= RK(C))`  |
 
-result is BOOL. EQ/NE work on any value pair: pointer-equal for STR/TAB/FUNC/CFUNC; structural compare for NUM/BOOL/NIL. ordered comparisons (LT/LE/GT/GE) require both operands NUM (or both STR for lex compare); mismatch traps.
+result is BOOL. EQ/NE work on any value pair: pointer-equal for STR/TAB/FUNC/CFUNC; structural compare for NUM/BOOL/NIL. ordered comparisons (LT/LE/GT/GE) need two NUM operands or two STR operands. STR compares byte-wise (unsigned), and a prefix sorts first. Any other mix traps (type error). The compiler emits GT/GE as they are; no fused compare-jump exists.
 
 ### unary
 
@@ -348,7 +348,8 @@ typedef struct {
     Closure*        closure;       // current closure (for upvalue access)
     uint8_t         return_reg;    // where to write returns in caller
     uint8_t         want_rets;     // how many rets caller wants (0 = all)
-    uint8_t         _padding[2];
+    uint8_t         post;          // metamethod result fix-up (0 = none)
+    uint8_t         _padding;
     uint32_t        saved_vararg_base;   // caller's vararg window, restored
     uint32_t        saved_vararg_count;  //   when this frame returns
     uint32_t        saved_vararg_sp;
@@ -383,7 +384,7 @@ caller wants `f(a, b)` with 1 expected return:
 256-slot flat array on the VMState:
 
 ```c
-Value globals[256];
+Value globals[P386_GLOBAL_SLOTS];   // 1024; Bx >= 1024 traps (bounds)
 ```
 
 at compile time, rust maintains a `Map<Name, u8>`. first reference to a global assigns the next free slot. compile errors out at slot 256.
@@ -416,10 +417,12 @@ depends on its absence).
 GETGLOBAL/SETGLOBAL are O(1) loads:
 
 ```nasm
-; GETGLOBAL A, B
+; GETGLOBAL A, Bx
 movzx ecx, ah                          ; A
 shr   eax, 16
-movzx edx, al                          ; B (slot)
+movzx edx, ax                          ; Bx (slot)
+cmp   edx, P386_GLOBAL_SLOTS           ; 1024
+jae   err_bounds
 mov   ebx, [edi + VM_GLOBALS + edx*8]      ; load value
 mov   esi, [edi + VM_GLOBALS + edx*8 + 4]  ; load tag
 mov   [ebp + ecx*8],     ebx
@@ -480,7 +483,7 @@ typedef struct {
     uint32_t  array_cap;
     Node*     hash;
     uint8_t   hash_lsize;    // log2 of hash capacity
-    Table*    metatable;     // NULL or table with __index
+    Table*    metatable;     // NULL or set by setmetatable
     // GC bits added later
 } Table;
 
@@ -493,20 +496,29 @@ typedef struct {
 
 resize heuristic: same as lua's `rehash` — count keys by category (positive int, other), pick array_cap as the largest power-of-two such that the array part is ≥50% full, hash takes the rest.
 
-### metatables (limited)
+### metatables
 
-**only `__index` is honored**, and **only on read** (GETTABLE / GETFIELD).
+`setmetatable(t, mt)` and `getmetatable(t)` are C builtins. `mt` is a table or nil. `P386Table.metatable` holds it (NULL = none). `rawget`/`rawset`/`rawequal`/`rawlen` ignore it. `__metatable`, `__tostring`, `__pairs`, `__mode` and `__gc` are not supported.
 
-- `t.foo` where `t` doesn't have `foo`:
-  - if `t.metatable` is nil → return nil
-  - if `t.metatable.__index` is a table → look up `foo` in that table (recursively, max 4 levels deep)
-  - if `t.metatable.__index` is a function → call it with `(t, "foo")`, return the result
+the fast paths do not change. a metamethod is examined only on a slow path:
 
-writes (`t.foo = x`) **never** consult metatable; always write directly to `t`.
+| event        | slow path that examines it                                          |
+| ------------ | ------------------------------------------------------------------- |
+| `__index`    | GETTABLE / GETFIELD gave nil and the table has a metatable          |
+| `__newindex` | SETTABLE / SETFIELD on a table that has a metatable, key not present |
+| `__add` `__sub` `__mul` `__div` `__idiv` `__mod` `__pow` | an operand is not NUM |
+| `__unm`      | NEG of a value that is not NUM                                      |
+| `__concat`   | CONCAT of a value that is not STR or NUM                            |
+| `__len`      | LEN of a table that has a metatable                                 |
+| `__eq`       | EQ / NE of two different tables                                     |
+| `__lt` `__le` | LT / LE / GT / GE that is not NUM/NUM or STR/STR (`a>b` is `__lt(b,a)`) |
+| `__call`     | CALL / TAILCALL of a value that is not a function                   |
 
-other metamethods (`__newindex`, `__add`, `__call`, `__tostring`, ...) are **not implemented**. carts that depend on them will silently misbehave.
+the handler comes from the left operand first, then the right. no handler → the usual type error (for `__eq`: not equal). bitwise ops have no metamethods.
 
-`setmetatable(t, m)` / `getmetatable(t)` are C builtins.
+`__index` / `__newindex` can be a table (the lookup continues in that table, max 32 levels; a cycle traps) or a function.
+
+**handler calls.** the dispatcher cannot re-enter `p386_vm_run` from C. so `p386_meta.c` finds the handler, and for a Lua function it puts the function and its arguments in `p386_meta_call[]`. the dispatcher then pushes a normal Lua frame (`call_push_lua_frame_ptr`) that returns 1 value into the destination register. a CFUNC handler is called directly from C. results of `__newindex` go to the first register above the frame, which is free. for `__eq`/`__lt`/`__le`, the frame's `post` byte (0 none, 1 to boolean, 2 to negated boolean for NE) makes RETURN convert the result.
 
 ---
 
@@ -637,12 +649,13 @@ offset  size  field
 0x04    4     bytecode_len    (in bytes; multiple of 4)
 0x08    4     consts_off      (relative to bytecode_section_offset)
 0x0C    4     upvals_off      (relative to bytecode_section_offset; UpvalueRef array)
-0x10    1     n_consts
+0x10    1     reserved (zero)
 0x11    1     n_params
 0x12    1     n_regs
 0x13    1     n_upvalues
 0x14    1     flags           (bit 0 = is_main; reserved otherwise)
-0x15    3     reserved
+0x15    1     reserved
+0x16    2     n_consts        (u16, little endian; 0..65535)
 ```
 
 ### string table (n_strings × 8 bytes)
@@ -716,7 +729,7 @@ typedef struct VMState {
     Closure*  closure;       // current closure (for upvalue access)
 
     // globals
-    Value     globals[256];
+    Value     globals[P386_GLOBAL_SLOTS];  // 1024
 
     // open upvalues, sorted by slot pointer (descending — newest first)
     Upvalue*  open_upvalues;
@@ -776,7 +789,7 @@ VM is entirely C+asm. zero rust calls at runtime. consumes the byte buffer direc
 | `goto` / labels              | parser ok, codegen NO | once the rest is stable; needs forward-ref pass |
 | ADDI / SUBI / MULI imm ops   | not in v1             | if `i = i + 1` profiling-dominant            |
 | comparison skip-next style   | not in v1             | if conditional-heavy carts profile slow      |
-| full metatables              | only `__index` read   | as cart compat demands                       |
+| `__tostring`                 | not implemented       | needs a Lua frame from inside `tostr`/`print` |
 | coroutines                   | not in v1             | indefinitely; rare in PICO-8 carts           |
 | string-num coercion in arith | trap on mismatch      | if cart compat demands; lua coerces silently |
 | strict argument count        | silent nil-pad        | maybe never; lua is also lenient here        |

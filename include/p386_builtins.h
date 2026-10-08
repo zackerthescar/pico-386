@@ -38,6 +38,106 @@ const char *p386_builtin_name(P386BuiltinSlot slot);
 /* Initial simple stubs. */
 int p386_builtin_print(P386VMState *vm, P386Value *args,
                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_btn(P386VMState *vm, P386Value *args,
+                     uint8_t nargs, uint8_t want_rets);
+int p386_builtin_btnp(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_spr(P386VMState *vm, P386Value *args,
+                     uint8_t nargs, uint8_t want_rets);
+int p386_builtin_sspr(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_map(P386VMState *vm, P386Value *args,
+                     uint8_t nargs, uint8_t want_rets);
+int p386_builtin_mget(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_mset(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_fget(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_fset(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_sget(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_sset(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_camera(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_clip(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_pal(P386VMState *vm, P386Value *args,
+                     uint8_t nargs, uint8_t want_rets);
+int p386_builtin_palt(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_line(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_rect(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_rectfill(P386VMState *vm, P386Value *args,
+                          uint8_t nargs, uint8_t want_rets);
+int p386_builtin_circfill(P386VMState *vm, P386Value *args,
+                          uint8_t nargs, uint8_t want_rets);
+int p386_builtin_circ(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_oval(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_ovalfill(P386VMState *vm, P386Value *args,
+                          uint8_t nargs, uint8_t want_rets);
+int p386_builtin_fillp(P386VMState *vm, P386Value *args,
+                       uint8_t nargs, uint8_t want_rets);
+int p386_builtin_color(P386VMState *vm, P386Value *args,
+                       uint8_t nargs, uint8_t want_rets);
+int p386_builtin_cursor(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_time(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_stat(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_flip(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_printh(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_type(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_unpack(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_pack(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_select(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_split(P386VMState *vm, P386Value *args,
+                       uint8_t nargs, uint8_t want_rets);
+int p386_builtin_rawget(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_rawset(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_rawequal(P386VMState *vm, P386Value *args,
+                          uint8_t nargs, uint8_t want_rets);
+int p386_builtin_rawlen(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_setmetatable(P386VMState *vm, P386Value *args,
+                              uint8_t nargs, uint8_t want_rets);
+int p386_builtin_getmetatable(P386VMState *vm, P386Value *args,
+                              uint8_t nargs, uint8_t want_rets);
+int p386_builtin_memcpy(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_memset(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_reload(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+int p386_builtin_cstore(P386VMState *vm, P386Value *args,
+                        uint8_t nargs, uint8_t want_rets);
+
+/* Host services for builtins; zero (no host) in tests. */
+typedef struct P386Host {
+    int32_t time_fp;            /* time(): seconds since start, 16.16 */
+    int32_t fps, target_fps;    /* stat(7), stat(8): plain integers */
+    int (*flip)(void);          /* flip(): present frame, wait, poll input;
+                                   nonzero = stop the cart */
+    uint8_t *cart_rom;          /* reload()/cstore() source; NULL = none */
+    uint32_t cart_rom_size;
+} P386Host;
+
+extern P386Host p386_host;
 int p386_builtin_cls(P386VMState *vm, P386Value *args,
                      uint8_t nargs, uint8_t want_rets);
 int p386_builtin_pset(P386VMState *vm, P386Value *args,

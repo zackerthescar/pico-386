@@ -43,6 +43,7 @@ typedef struct P386Table {
     uint32_t        len;        /* populated entries */
     uint32_t        cap;
     uint32_t        array_len;  /* contiguous int keys 1..N (`#t`) */
+    struct P386Table *metatable; /* NULL or set by setmetatable */
 } P386Table;
 
 typedef struct P386Upvalue {
@@ -63,6 +64,7 @@ typedef struct P386Closure {
 P386String *p386_string_new(const char *data, uint32_t len);
 P386String *p386_string_intern(const char *data, uint32_t len);
 int         p386_string_eq(const P386String *a, const P386String *b);
+int         p386_string_cmp(const P386String *a, const P386String *b);
 
 /* CONCAT helper: returns NULL on type error (non-NUM/non-STR). */
 P386String *p386_value_concat(const P386Value *a, const P386Value *b);

@@ -127,12 +127,50 @@ pub const P386_BUILTIN_SUB: u8 = 52;
 // higher-order builtins implemented in the Lua prelude (no CFUNC on the C side)
 pub const P386_BUILTIN_ALL: u8 = 53;
 pub const P386_BUILTIN_FOREACH: u8 = 54;
-pub const P386_BUILTIN_COUNT: u8 = 55;
-pub const P386_GLOBAL_INIT: u8 = 55;
-pub const P386_GLOBAL_UPDATE: u8 = 56;
-pub const P386_GLOBAL_UPDATE60: u8 = 57;
-pub const P386_GLOBAL_DRAW: u8 = 58;
-pub const P386_USER_GLOBAL_BASE: u8 = 59;
+pub const P386_BUILTIN_SSPR: u8 = 55;
+pub const P386_BUILTIN_MGET: u8 = 56;
+pub const P386_BUILTIN_MSET: u8 = 57;
+pub const P386_BUILTIN_FGET: u8 = 58;
+pub const P386_BUILTIN_FSET: u8 = 59;
+pub const P386_BUILTIN_SGET: u8 = 60;
+pub const P386_BUILTIN_SSET: u8 = 61;
+pub const P386_BUILTIN_CAMERA: u8 = 62;
+pub const P386_BUILTIN_CLIP: u8 = 63;
+pub const P386_BUILTIN_PAL: u8 = 64;
+pub const P386_BUILTIN_PALT: u8 = 65;
+pub const P386_BUILTIN_CIRC: u8 = 66;
+pub const P386_BUILTIN_OVAL: u8 = 67;
+pub const P386_BUILTIN_OVALFILL: u8 = 68;
+pub const P386_BUILTIN_FILLP: u8 = 69;
+pub const P386_BUILTIN_COLOR: u8 = 70;
+pub const P386_BUILTIN_CURSOR: u8 = 71;
+pub const P386_BUILTIN_TIME: u8 = 72;
+pub const P386_BUILTIN_STAT: u8 = 73;
+pub const P386_BUILTIN_FLIP: u8 = 74;
+pub const P386_BUILTIN_PRINTH: u8 = 75;
+pub const P386_BUILTIN_TYPE: u8 = 76;
+pub const P386_BUILTIN_UNPACK: u8 = 77;
+pub const P386_BUILTIN_PACK: u8 = 78;
+pub const P386_BUILTIN_SELECT: u8 = 79;
+pub const P386_BUILTIN_SPLIT: u8 = 80;
+pub const P386_BUILTIN_RAWGET: u8 = 81;
+pub const P386_BUILTIN_RAWSET: u8 = 82;
+pub const P386_BUILTIN_RAWEQUAL: u8 = 83;
+pub const P386_BUILTIN_RAWLEN: u8 = 84;
+pub const P386_BUILTIN_MEMCPY: u8 = 85;
+pub const P386_BUILTIN_MEMSET: u8 = 86;
+pub const P386_BUILTIN_RELOAD: u8 = 87;
+pub const P386_BUILTIN_CSTORE: u8 = 88;
+pub const P386_BUILTIN_SETMETATABLE: u8 = 89;
+pub const P386_BUILTIN_GETMETATABLE: u8 = 90;
+pub const P386_BUILTIN_COUNT: u8 = 91;
+pub const P386_GLOBAL_INIT: u8 = 91;
+pub const P386_GLOBAL_UPDATE: u8 = 92;
+pub const P386_GLOBAL_UPDATE60: u8 = 93;
+pub const P386_GLOBAL_DRAW: u8 = 94;
+pub const P386_USER_GLOBAL_BASE: u8 = 95;
+/// Size of the VM globals array (GETGLOBAL/SETGLOBAL use a 16-bit Bx slot).
+pub const P386_GLOBAL_SLOTS: u16 = 1024;
 
 #[derive(Clone)]
 pub enum Constant {
@@ -305,7 +343,7 @@ pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[
         pad4(&mut out);
         let code_len = fp.insns.len() * 4;
         let consts_off = out.len() - bytecode_section_offset;
-        for c in fp.consts.iter().take(255) {
+        for c in fp.consts.iter().take(65535) {
             match c {
                 Constant::Nil => { push_i32(&mut out, 0); push_u32(&mut out, P386_TAG_NIL); }
                 Constant::Bool(v) => { push_i32(&mut out, if *v { 1 } else { 0 }); push_u32(&mut out, P386_TAG_BOOL); }
@@ -326,7 +364,9 @@ pub fn emit_program(instructions: &[u32], constants: &[Constant], prototypes: &[
         patch_u32(&mut out, patch + 4, code_len as u32);
         patch_u32(&mut out, patch + 8, consts_off as u32);
         patch_u32(&mut out, patch + 12, upvals_off as u32);
-        out[patch + 16] = fp.consts.len().min(255) as u8;
+        let n_consts = fp.consts.len().min(65535) as u16;
+        out[patch + 22] = n_consts as u8;
+        out[patch + 23] = (n_consts >> 8) as u8;
         out[patch + 17] = fp.params;
         out[patch + 18] = fp.regs.max(1);
         out[patch + 19] = fp.upvalues.len().min(255) as u8;

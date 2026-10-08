@@ -25,7 +25,7 @@ P8Ram p8_ram;
 #define PROTO_BYTECODE_LEN_OFF 4
 #define PROTO_CONSTS_OFF_OFF   8
 #define PROTO_UPVALS_OFF_OFF   12
-#define PROTO_N_CONSTS_OFF     16
+#define PROTO_N_CONSTS_OFF     22
 #define PROTO_N_PARAMS_OFF     17
 #define PROTO_N_REGS_OFF       18
 #define PROTO_N_UPVALS_OFF     19
@@ -610,6 +610,37 @@ TEST(vm_globals_round_trip) {
     ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
     ASSERT_NIL(vm, 0);
     ASSERT_NUM(vm, 3, P386_FP_INT(42));
+    PASS();
+}
+
+TEST(vm_globals_wide_slot_round_trip) {
+    /* Slot 1000 only fits in Bx (B | C << 8). */
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_const(&f, P386_FP_INT(7), P386_TAG_NUM);
+    fx_emit(&f, P386_ABX(P386_OP_LOADK, 0, 0));
+    fx_emit(&f, P386_ABX(P386_OP_SETGLOBAL, 0, 1000));
+    fx_emit(&f, P386_ABX(P386_OP_GETGLOBAL, 2, 1000));
+    fx_emit(&f, P386_ABX(P386_OP_GETGLOBAL, 1, 1000 & 0xFF));   /* other slot */
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 2, 2, 0));
+    ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
+    ASSERT_NUM(vm, 2, P386_FP_INT(7));
+    ASSERT_EQ(P386_FP_INT(7), vm.globals[1000].value);
+    PASS();
+}
+
+TEST(vm_globals_slot_out_of_range_traps) {
+    VmFixture f;
+    P386VMState vm;
+    fx_init(&f);
+    fx_emit(&f, P386_ABX(P386_OP_GETGLOBAL, 0, P386_GLOBAL_SLOTS));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_BOUNDS, run_fixture(&f, &vm));
+    fx_init(&f);
+    fx_emit(&f, P386_ABX(P386_OP_SETGLOBAL, 0, 0xFFFF));
+    fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 1, 0));
+    ASSERT_EQ(P386_VM_ERR_BOUNDS, run_fixture(&f, &vm));
     PASS();
 }
 
@@ -1481,11 +1512,13 @@ TEST(vm_tailcall_cfunc_returns_value) {
     fx_emit(&f, P386_ABC(P386_OP_TAILCALL, 0, 3, 0));
 
     p8_ram_init();
-    p8_ram.mem.screen[(12U * 64U) + (11U >> 1)] = 0x0a;
+    /* x = 11 is odd: the high nibble. 10 differs from both args, so the
+     * check fails if pget's result is not written back. */
+    p8_ram.mem.screen[(12U * 64U) + (11U >> 1)] = 0xa0;
 
     ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
     ASSERT_TAG(vm, 1, P386_TAG_NUM);
-    ASSERT_EQ(11 << 16, vm.value_stack[1].value);
+    ASSERT_EQ(10 << 16, vm.value_stack[1].value);
     ASSERT_EQ(0, vm.call_depth);
     PASS();
 }
@@ -1826,5 +1859,97 @@ TEST(vm_builtin_call_via_dispatch) {
     fx_emit(&f, P386_ABC(P386_OP_RETURN, 0, 2, 0));
     ASSERT_EQ(P386_VM_HALTED, run_fixture(&f, &vm));
     ASSERT_NUM(vm, 0, P386_FP_INT(3));
+    PASS();
+}
+
+/* ===================================================================== *
+ * Input: btn/btnp state and btnp repeat timing                          *
+ * ===================================================================== */
+
+#include "input.h"
+
+/* Hold button O of player 0 for `n` frames; return btnp bits as a mask of
+ * which frames (1-based, up to 32) reported a press. */
+static uint32_t hold_o_frames(int n, int fps60) {
+    uint8_t down[P8_PLAYERS];
+    uint32_t hits = 0;
+    int f;
+    memset(down, 0, sizeof(down));
+    down[0] = 1 << P8_BTN_O;
+    for (f = 1; f <= n; f++) {
+        p8_input_frame(down, fps60);
+        if (p8_btnp_bits[0] & (1 << P8_BTN_O)) hits |= 1UL << (f - 1);
+    }
+    return hits;
+}
+
+TEST(vm_input_btnp_repeat_timing) {
+    p8_ram_init();
+    p8_input_reset();
+    /* default 15/4: frame 1, then 16, 20, 24, 28, 32 */
+    ASSERT_EQ(0x88888001UL, hold_o_frames(32, 0));
+
+    p8_input_reset();
+    /* 60fps doubles both: frame 1, then 31 */
+    ASSERT_EQ(0x40000001UL, hold_o_frames(32, 1));
+
+    p8_input_reset();
+    p8_ram.mem.hw.btnp_delay = 255;     /* never repeat */
+    ASSERT_EQ(0x00000001UL, hold_o_frames(32, 0));
+
+    p8_input_reset();
+    p8_ram.mem.hw.btnp_delay = 0;       /* 0 = default */
+    p8_ram.mem.hw.btnp_repeat = 0;
+    ASSERT_EQ(0x88888001UL, hold_o_frames(32, 0));
+    PASS();
+}
+
+TEST(vm_builtin_btn_btnp) {
+    P386VMState vm;
+    P386Value a[2];
+    uint8_t down[P8_PLAYERS];
+    p386_vm_init(&vm);
+    p8_ram_init();
+    p8_input_reset();
+
+    memset(down, 0, sizeof(down));
+    down[0] = (1 << P8_BTN_LEFT) | (1 << P8_BTN_X);
+    down[1] = 1 << P8_BTN_UP;
+    p8_input_frame(down, 0);
+
+    /* btn() -> bitfield, P1 in bits 8-15 */
+    ASSERT_EQ(1, p386_builtin_btn(&vm, a, 0, 1));
+    ASSERT_EQ(P386_TAG_NUM, a[0].tag);
+    ASSERT_EQ(P386_FP_INT(0x0421), a[0].value);
+
+    BNUM(a, 0, P8_BTN_LEFT);
+    ASSERT_EQ(1, p386_builtin_btn(&vm, a, 1, 1));
+    ASSERT_EQ(P386_TAG_BOOL, a[0].tag);
+    ASSERT_EQ(1, a[0].value);
+
+    BNUM(a, 0, P8_BTN_RIGHT);
+    ASSERT_EQ(1, p386_builtin_btn(&vm, a, 1, 1));
+    ASSERT_EQ(0, a[0].value);
+
+    BNUM(a, 0, P8_BTN_UP); BNUM(a, 1, 1);
+    ASSERT_EQ(1, p386_builtin_btn(&vm, a, 2, 1));
+    ASSERT_EQ(1, a[0].value);
+
+    /* first frame: btnp true; second held frame: false, btn still true */
+    BNUM(a, 0, P8_BTN_X);
+    ASSERT_EQ(1, p386_builtin_btnp(&vm, a, 1, 1));
+    ASSERT_EQ(1, a[0].value);
+    p8_input_frame(down, 0);
+    BNUM(a, 0, P8_BTN_X);
+    ASSERT_EQ(1, p386_builtin_btnp(&vm, a, 1, 1));
+    ASSERT_EQ(0, a[0].value);
+    BNUM(a, 0, P8_BTN_X);
+    ASSERT_EQ(1, p386_builtin_btn(&vm, a, 1, 1));
+    ASSERT_EQ(1, a[0].value);
+
+    /* out-of-range button/player -> false */
+    BNUM(a, 0, 9);
+    ASSERT_EQ(1, p386_builtin_btn(&vm, a, 1, 1));
+    ASSERT_EQ(0, a[0].value);
     PASS();
 }

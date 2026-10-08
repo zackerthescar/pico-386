@@ -5,6 +5,8 @@
 #   ./test.sh              Run unit tests (TEST.EXE) in QEMU
 #   ./test.sh integration  Run integration test (MAIN.EXE + cartridge) in QEMU
 #   ./test.sh vga          Run VGA screenshot test (VGATEST.EXE) in QEMU
+#   ./test.sh screens      Run end-to-end screen tests (test/carts/*.p8 + .expect)
+#   ./test.sh bench        Count instructions per drawing phase (QEMU -icount)
 #   ./test.sh carts        Run integration test against every cart in
 #                          test/carts.manifest plus optional Lexaloffle carts
 #                          dropped under $LEXALOFFLE_CARTS_DIR (see
@@ -122,10 +124,11 @@ quiet_make() {
 }
 
 # Run QEMU with monitor socket, wait for serial marker, screendump, quit.
-# Usage: run_qemu_screenshot <marker_string> <output_png>
+# Usage: run_qemu_screenshot <marker_string> <output_png> [keep_ppm_path]
 run_qemu_screenshot() {
     local MARKER="$1"
     local OUTPUT_PNG="$2"
+    local KEEP_PPM="${3:-}"
     local MONITOR_SOCK
     MONITOR_SOCK="$(mktemp -u /tmp/qemu-monitor.XXXXXX).sock"
     local SCREENSHOT_PPM
@@ -188,6 +191,7 @@ run_qemu_screenshot() {
 
     # Convert PPM -> PNG
     convert "$SCREENSHOT_PPM" "$OUTPUT_PNG"
+    [ -z "$KEEP_PPM" ] || cp "$SCREENSHOT_PPM" "$KEEP_PPM"
     rm -f "$SCREENSHOT_PPM"
 
     echo "Screenshot saved: $OUTPUT_PNG"
@@ -284,7 +288,7 @@ run_integration_test() {
     fi
 
     echo "=== Booting MAIN.EXE + $CART_NAME in QEMU ==="
-    build_floppy "$(printf '@echo off\r\nMAIN.EXE %s.P8\r\n' "$CART_NAME")" \
+    build_floppy "$(printf '@echo off\r\nset P386_FRAMES=3\r\nMAIN.EXE %s.P8\r\n' "$CART_NAME")" \
         "$DOS_DIR/MAIN.EXE::MAIN.EXE" \
         "$CART_PNG::$CART_NAME.P8"
     run_qemu
@@ -366,7 +370,7 @@ run_integration_test() {
 
 # SHA-256 of the expected VGA test screenshot (color bars, Mode X 320x400).
 # Regenerate with: ./test.sh vga --update-hash
-VGA_TEST_HASH="65e068e39d3ecbd9baf700b793462b2835b6cacb7ec6968c4930e0336fdb4c54"
+VGA_TEST_HASH="a4d89c4ce83e45b2a08e94215b2536d3c66d3140d4ecd754e9cebaa7a13708a5"
 
 run_vga_test() {
     echo "=== Building VGA test ==="
@@ -427,6 +431,93 @@ run_vga_test() {
     fi
 }
 
+# ── End-to-end screen tests ──
+#
+# Each test/carts/NAME.p8 with a NAME.expect is built into a .p8.png with
+# tools/mkcart.py, run in MAIN.EXE for a few frames, held on screen
+# (P386_HOLD), and its QEMU screendump is checked against the pixel probes
+# in NAME.expect (tools/checkshot.py).
+
+run_screen_test() {
+    local src="$1" name stem cart ppm png
+    name="$(basename "$src" .p8)"
+    stem="$(echo "$name" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_\n' '_' | cut -c1-8)"
+    cart="$(mktemp /tmp/p386-screen.XXXXXX.png)"
+    ppm="$SCRIPT_DIR/test_screen_$name.ppm"
+    png="$SCRIPT_DIR/test_screen_$name.png"
+
+    echo "── $name ─────────────────────────────────────"
+    python3 -I "$SCRIPT_DIR/tools/mkcart.py" "$src" "$cart" || { echo "  [FAIL] mkcart"; return 1; }
+    build_floppy "$(printf '@echo off\r\nset P386_FRAMES=2\r\nset P386_HOLD=1\r\nMAIN.EXE %s.P8\r\n' "$stem")" \
+        "$DOS_DIR/MAIN.EXE::MAIN.EXE" \
+        "$cart::$stem.P8"
+    rm -f "$ppm"
+    run_qemu_screenshot "P386_HOLD" "$png" "$ppm" >/dev/null
+    rm -f "$cart"
+
+    if grep -q "failed:" "$SERIAL_LOG"; then
+        grep "failed:" "$SERIAL_LOG" | sed 's/^/  /'
+        echo "  [FAIL] runtime error"
+        return 1
+    fi
+    if python3 -I "$SCRIPT_DIR/tools/checkshot.py" "$ppm" "${src%.p8}.expect"; then
+        return 0
+    fi
+    echo "  screenshot: $png"
+    return 1
+}
+
+run_screen_tests() {
+    echo "=== Building MAIN.EXE ==="
+    quiet_make pico
+    [ -f "$DOS_DIR/MAIN.EXE" ] || die "Build did not produce MAIN.EXE"
+
+    local src failed=0 ran=0
+    for src in "$SCRIPT_DIR"/test/carts/*.p8; do
+        [ -f "${src%.p8}.expect" ] || continue
+        ran=$((ran + 1))
+        run_screen_test "$src" || failed=$((failed + 1))
+    done
+    echo ""
+    if [ "$ran" -eq 0 ]; then
+        echo "SCREEN TESTS: none found"
+        return 1
+    fi
+    if [ "$failed" -gt 0 ]; then
+        echo "SCREEN TESTS FAILED ($failed of $ran)"
+        return 1
+    fi
+    echo "SCREEN TESTS PASSED ($ran)"
+    return 0
+}
+
+# ── Drawing benchmark ──
+#
+# BENCH.EXE prints instruction counts per drawing phase. QEMU runs with
+# -icount so the guest TSC counts instructions (see bench_gfx_main.c).
+# Booting under -icount is slow: use TIMEOUT=180 or more.
+
+run_bench() {
+    echo "=== Building BENCH.EXE ==="
+    quiet_make bench
+    build_floppy "$(printf '@echo off\r\nBENCH.EXE\r\n')" "$DOS_DIR/BENCH.EXE::BENCH.EXE"
+    rm -f "$SERIAL_LOG"
+    qemu-system-i386 -cpu pentium -icount shift=0,sleep=off \
+        -drive file="$FLOPPY",format=raw,if=floppy,file.locking=off \
+        -serial null -serial file:"$SERIAL_LOG" -display none -m 32 -boot a \
+        2>/dev/null &
+    local QEMU_PID=$! i
+    # -icount runs slowly; stop QEMU as soon as the results are in.
+    for i in $(seq 1 "$TIMEOUT"); do
+        grep -q BENCH_DONE "$SERIAL_LOG" 2>/dev/null && break
+        sleep 1
+    done
+    kill "$QEMU_PID" 2>/dev/null || true
+    wait "$QEMU_PID" 2>/dev/null || true
+    grep -q BENCH_DONE "$SERIAL_LOG" || die "benchmark did not finish (TIMEOUT=$TIMEOUT)"
+    grep '^BENCH ' "$SERIAL_LOG"
+}
+
 # ── External cart matrix ──
 #
 # Builds MAIN.EXE once, then loops over every cart in test/carts.manifest plus
@@ -446,7 +537,7 @@ run_one_cart() {
 
     echo "── $label ($dos_stem) ─────────────────────────────────────"
 
-    build_floppy "$(printf '@echo off\r\nMAIN.EXE %s.P8\r\n' "$dos_stem")" \
+    build_floppy "$(printf '@echo off\r\nset P386_FRAMES=3\r\nMAIN.EXE %s.P8\r\n' "$dos_stem")" \
         "$DOS_DIR/MAIN.EXE::MAIN.EXE" \
         "$cart_png::$dos_stem.P8"
     run_qemu
@@ -464,6 +555,9 @@ run_one_cart() {
     if grep -q "main chunk failed:\|_init failed:\|_update failed:\|_update60 failed:\|_draw failed:" "$SERIAL_LOG"; then
         echo "  [FAIL] runtime error during cart execution"; ok=false
     fi
+    # The frame loop runs until Esc unless P386_FRAMES is set; a hang here
+    # means the loop never finished its frames.
+    grep -q "Unloading cart" "$SERIAL_LOG" || { echo "  [FAIL] no clean shutdown (hung?)"; ok=false; }
 
     if [ "$ok" = true ]; then
         echo "  [PASS] $label"
@@ -556,6 +650,8 @@ case "$MODE" in
     integration) run_integration_test ;;
     vga)         run_vga_test "$@" ;;
     carts)       run_carts_matrix ;;
-    all)         run_unit_tests && run_vm_tests && run_integration_test && run_vga_test "$@" ;;
-    *)           echo "Usage: $0 [unit|vm|integration|vga|carts|all]" >&2; exit 1 ;;
+    screens|sprites) run_screen_tests ;;
+    bench)       run_bench ;;
+    all)         run_unit_tests && run_vm_tests && run_integration_test && run_vga_test "$@" && run_screen_tests ;;
+    *)           echo "Usage: $0 [unit|vm|integration|vga|carts|screens|bench|all]" >&2; exit 1 ;;
 esac

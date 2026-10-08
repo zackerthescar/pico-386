@@ -4,7 +4,8 @@
 /*
  * Stable VM global slots for PICO-8/Lua builtins.
  *
- * Bytecode currently addresses globals by an 8-bit slot index. Keep these
+ * Bytecode addresses globals by a 16-bit slot index (Bx, up to
+ * P386_GLOBAL_SLOTS). Keep these
  * values stable and in sync with the compiler once it starts emitting builtin
  * global references by name.
  */
@@ -80,6 +81,54 @@ typedef enum P386BuiltinSlot {
      * is also prelude-implemented (its CFUNC registration was removed). */
     P386_BUILTIN_ALL,
     P386_BUILTIN_FOREACH,
+
+    /* ── graphics: sprites, map, draw state ── */
+    P386_BUILTIN_SSPR,
+    P386_BUILTIN_MGET,
+    P386_BUILTIN_MSET,
+    P386_BUILTIN_FGET,
+    P386_BUILTIN_FSET,
+    P386_BUILTIN_SGET,
+    P386_BUILTIN_SSET,
+    P386_BUILTIN_CAMERA,
+    P386_BUILTIN_CLIP,
+    P386_BUILTIN_PAL,
+    P386_BUILTIN_PALT,
+
+    /* ── shapes, pen state ── */
+    P386_BUILTIN_CIRC,
+    P386_BUILTIN_OVAL,
+    P386_BUILTIN_OVALFILL,
+    P386_BUILTIN_FILLP,
+    P386_BUILTIN_COLOR,
+    P386_BUILTIN_CURSOR,
+
+    /* ── system ── */
+    P386_BUILTIN_TIME,
+    P386_BUILTIN_STAT,
+    P386_BUILTIN_FLIP,
+    P386_BUILTIN_PRINTH,
+
+    /* ── values / tables ── */
+    P386_BUILTIN_TYPE,
+    P386_BUILTIN_UNPACK,
+    P386_BUILTIN_PACK,
+    P386_BUILTIN_SELECT,
+    P386_BUILTIN_SPLIT,
+    P386_BUILTIN_RAWGET,
+    P386_BUILTIN_RAWSET,
+    P386_BUILTIN_RAWEQUAL,
+    P386_BUILTIN_RAWLEN,
+
+    /* ── memory blocks / cart ROM ── */
+    P386_BUILTIN_MEMCPY,
+    P386_BUILTIN_MEMSET,
+    P386_BUILTIN_RELOAD,
+    P386_BUILTIN_CSTORE,
+
+    /* ── metatables ── */
+    P386_BUILTIN_SETMETATABLE,
+    P386_BUILTIN_GETMETATABLE,
 
     P386_BUILTIN_COUNT,
 

@@ -57,7 +57,7 @@ void main() {
     RUN_TEST(compile_multi_arg_call_preserves_args);
     RUN_TEST(compile_local_scope_shadowing_runs_vm);
     RUN_TEST(compile_multi_assign_rhs_first_runs_vm);
-    RUN_TEST(compile_constant_overflow_returns_null);
+    RUN_TEST(compile_constants_past_old_limit_compile);
     RUN_TEST(compile_branch_local_scope_does_not_leak);
     RUN_TEST(compile_lua_function_call_runs_vm);
     RUN_TEST(compile_multi_return_three_values_runs_vm);
@@ -76,6 +76,29 @@ void main() {
     RUN_TEST(compile_ipairs_yields_index_and_value);
     RUN_TEST(compile_comment_headed_cart_with_prelude);
     RUN_TEST(compile_lifecycle_slots_and_host_call_draw_pixels);
+    RUN_TEST(compile_builtin_result_feeds_last_arg);
+    RUN_TEST(compile_string_compare);
+    RUN_TEST(compile_string_compare_mixed_traps);
+    RUN_TEST(compile_string_insertion_sort);
+    RUN_TEST(vga_screen_pal_maps_to_dac_rgb);
+    RUN_TEST(compile_gfx_spr_and_map_draw);
+    RUN_TEST(compile_gfx_multi_value_returns);
+    RUN_TEST(compile_many_globals_past_old_limit);
+    RUN_TEST(meta_index_table_class);
+    RUN_TEST(meta_index_function);
+    RUN_TEST(meta_index_cycle_traps);
+    RUN_TEST(meta_newindex);
+    RUN_TEST(meta_arith_vector);
+    RUN_TEST(meta_arith_without_handler_traps);
+    RUN_TEST(meta_eq);
+    RUN_TEST(meta_len_concat_call);
+    RUN_TEST(meta_get_set_metatable);
+    RUN_TEST(meta_lt_le);
+    RUN_TEST(compile_constructor_constant_fields);
+    RUN_TEST(compile_many_number_constants);
+    RUN_TEST(compile_many_field_names);
+    RUN_TEST(compile_high_index_method_call);
+    RUN_TEST(compile_big_table_constructor);
 
     TEST_REPORT();
 }
