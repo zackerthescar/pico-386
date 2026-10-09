@@ -11,6 +11,7 @@
 #include <string.h>
 #include "p386_meta.h"
 #include "p386_builtins.h"
+#include "p386_gc.h"
 
 /* Limit for __index / __newindex chains. A cycle stops with an error. */
 #define META_CHAIN_MAX 32
@@ -25,6 +26,20 @@ static const char *const event_names[P386_EV_COUNT] = {
 
 static P386String *event_str[P386_EV_COUNT];
 static P386String *index_str, *newindex_str, *call_str;
+
+/* p386_gc_reset frees all strings: forget the cached names. */
+void p386_meta_reset(void) {
+    memset(event_str, 0, sizeof(event_str));
+    index_str = newindex_str = call_str = 0;
+}
+
+void p386_meta_mark_roots(void) {
+    uint32_t i;
+    for (i = 0; i < P386_EV_COUNT; i++) p386_gc_mark_object(event_str[i]);
+    p386_gc_mark_object(index_str);
+    p386_gc_mark_object(newindex_str);
+    p386_gc_mark_object(call_str);
+}
 
 static P386String *intern_name(P386String **slot, const char *name) {
     if (!*slot) *slot = p386_string_intern(name, (uint32_t)strlen(name));

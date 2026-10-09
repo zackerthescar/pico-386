@@ -56,4 +56,8 @@ int p386_meta_has_len(const P386Table *t);
 int p386_meta_call_value(P386VMState *vm, const P386Value *obj,
                          const P386Value *args, uint32_t nargs);
 
+/* Collector root: the cached metamethod name strings. */
+void p386_meta_mark_roots(void);
+void p386_meta_reset(void);
+
 #endif /* P386_META_H */

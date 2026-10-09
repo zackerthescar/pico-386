@@ -4,6 +4,11 @@ pico-386 ships a small matrix of real PICO-8 cartridges that exercise the cart
 loader, the PXA decompressor, and the bytecode compiler end-to-end inside the
 QEMU/FreeDOS test harness. Carts are **never** committed to this repo.
 
+Real games with a permissive license are in `test/games/`. The mode
+`./test.sh games` runs them (see `test/games/games.tsv` and
+`tools/fetch_games.sh`). Games without a permissive license are downloaded
+into `cache/games/` and are never committed.
+
 ## Layout
 
 ```

@@ -90,14 +90,77 @@ pub struct Compiler {
     /// Program-wide user global slots, shared across every function.
     globals: Vec<Name>,
     funcs: Vec<FuncState>,
+    /// Builtin slots that must not become intrinsic opcodes (the cart
+    /// assigns that global). See `compile` in lib.rs.
+    no_intrinsic: Vec<u8>,
+    /// Intrinsic builtin slots this compile saw a SETGLOBAL for.
+    assigned_intrinsics: Vec<u8>,
 }
 
 impl Compiler {
     pub fn new(names: NameTable) -> Self {
-        Self { names, globals: Vec::new(), funcs: Vec::new() }
+        Self::with_no_intrinsic(names, Vec::new())
+    }
+
+    pub fn with_no_intrinsic(names: NameTable, no_intrinsic: Vec<u8>) -> Self {
+        Self { names, globals: Vec::new(), funcs: Vec::new(), no_intrinsic,
+               assigned_intrinsics: Vec::new() }
+    }
+
+    /// Intrinsic slots that the program assigns but that were compiled as
+    /// opcodes. Not empty: compile again with these in `no_intrinsic`.
+    pub fn intrinsic_conflicts(&self) -> Vec<u8> {
+        self.assigned_intrinsics.iter().copied()
+            .filter(|s| !self.no_intrinsic.contains(s)).collect()
+    }
+
+    fn emit_setglobal(&mut self, r: u8, slot: u16) {
+        if slot < 256 && intrinsic_for(slot as u8).is_some()
+            && !self.assigned_intrinsics.contains(&(slot as u8)) {
+            self.assigned_intrinsics.push(slot as u8);
+        }
+        self.emit(abx(P386_OP_SETGLOBAL, r, slot));
+    }
+
+    /// `flr(x)`, `abs(x)`, `min(a, b)` ... as one opcode, when the callee is
+    /// the builtin global (not a local or upvalue), the cart never assigns
+    /// it, and the argument count is exact. Returns false to compile a
+    /// normal CALL.
+    fn try_intrinsic(&mut self, call: &CallExpr, dst: u8) -> bool {
+        let n = match &*call.func {
+            Expr::Var(Var::Name(n)) => *n,
+            _ => return false,
+        };
+        let slot = match self.builtin_slot(n) {
+            Some(s) => s,
+            None => return false,
+        };
+        let (op, arity) = match intrinsic_for(slot) {
+            Some(x) => x,
+            None => return false,
+        };
+        if call.args.len() != arity || self.no_intrinsic.contains(&slot)
+            || self.find_local(n).is_some()
+            || self.resolve_upvalue(self.funcs.len() - 1, n).is_some() {
+            return false;
+        }
+        let save = self.freereg();
+        if dst >= save {
+            self.fs_mut().freereg = dst + 1;
+        }
+        let rb = self.expr_to_rk(&call.args[0]);
+        let rc = if arity == 2 { self.expr_to_rk(&call.args[1]) } else { 0 };
+        self.emit(abc(op, dst, rb, rc));
+        self.fs_mut().freereg = save.max(dst + 1);
+        true
     }
 
     pub fn compile_chunk(mut self, chunk: Chunk) -> Option<FuncProto> {
+        self.compile_chunk_keep(chunk)
+    }
+
+    /// As compile_chunk, but keeps the compiler (see intrinsic_conflicts).
+    pub fn compile_chunk_keep(&mut self, chunk: Chunk) -> Option<FuncProto> {
         // Main chunk is vararg in real Lua, but we have no VARARG opcode.
         self.funcs.push(FuncState::new(0));
         self.fs_mut().has_vararg = true;
@@ -302,12 +365,15 @@ impl Compiler {
         idx
     }
 
-    /// Emit `R[dst] = R[obj][name]`. GETFIELD takes an 8-bit constant index.
-    /// For a higher index, load the key into a temp and use GETTABLE.
+    /// Emit `R[dst] = R[obj][name]`. GETFIELD takes an 8-bit constant index
+    /// and two cache words that the loader fills (see BYTECODE.md). For a
+    /// higher index, load the key into a temp and use GETTABLE.
     fn emit_getfield(&mut self, dst: u8, obj: u8, name: Name) {
         let k = self.add_name_const(name);
         if k <= 0xff {
             self.emit(abc(P386_OP_GETFIELD, dst, obj, k as u8));
+            self.emit(0);
+            self.emit(0);
             return;
         }
         let save = self.freereg();
@@ -427,7 +493,10 @@ impl Compiler {
             b"fillp" => P386_BUILTIN_FILLP,
             b"color" => P386_BUILTIN_COLOR,
             b"cursor" => P386_BUILTIN_CURSOR,
-            b"time" | b"t" => P386_BUILTIN_TIME,
+            b"time" => P386_BUILTIN_TIME,
+            // t() is time() under a second name, but a separate global: a
+            // cart may assign t and still call time().
+            b"t" => P386_BUILTIN_T,
             b"stat" => P386_BUILTIN_STAT,
             b"flip" => P386_BUILTIN_FLIP,
             b"printh" => P386_BUILTIN_PRINTH,
@@ -446,6 +515,15 @@ impl Compiler {
             b"cstore" => P386_BUILTIN_CSTORE,
             b"setmetatable" => P386_BUILTIN_SETMETATABLE,
             b"getmetatable" => P386_BUILTIN_GETMETATABLE,
+            b"cocreate" => P386_BUILTIN_COCREATE,
+            b"coresume" => P386_BUILTIN_CORESUME,
+            b"costatus" => P386_BUILTIN_COSTATUS,
+            b"yield" => P386_BUILTIN_YIELD,
+            b"menuitem" => P386_BUILTIN_MENUITEM,
+            b"extcmd" => P386_BUILTIN_EXTCMD,
+            b"cartdata" => P386_BUILTIN_CARTDATA,
+            b"dget" => P386_BUILTIN_DGET,
+            b"dset" => P386_BUILTIN_DSET,
             b"_init" => P386_GLOBAL_INIT,
             b"_update" => P386_GLOBAL_UPDATE,
             b"_update60" => P386_GLOBAL_UPDATE60,
@@ -602,7 +680,7 @@ impl Compiler {
                 } else {
                     let r = self.expr_to_anyreg(value);
                     let slot = self.global_slot(*n);
-                    self.emit(abx(P386_OP_SETGLOBAL, r, slot));
+                    self.emit_setglobal(r, slot);
                 }
             }
             _ => {
@@ -634,13 +712,52 @@ impl Compiler {
         }
     }
 
+    /// Compile a condition as jumps, not as a value. Returns the jumps that
+    /// are taken when `cond` is `when`; the code falls through otherwise.
+    /// `and`, `or` and `not` only route jumps. A comparison becomes a fused
+    /// BEQ..BGE followed by the JMPF/JMPT that it decides.
+    fn cond_jumps(&mut self, cond: &Expr, when: bool) -> Vec<usize> {
+        match cond {
+            Expr::BinOp(op @ (BinOp::And | BinOp::Or), a, b) => {
+                // `a and b` is false if either is false; `a or b` is true if
+                // either is true. Otherwise test a first and skip b on it.
+                if (*op == BinOp::And) != when {
+                    let mut j = self.cond_jumps(a, when);
+                    j.extend(self.cond_jumps(b, when));
+                    j
+                } else {
+                    let skip = self.cond_jumps(a, !when);
+                    let j = self.cond_jumps(b, when);
+                    for s in skip {
+                        self.patch_jump_to_here(s);
+                    }
+                    j
+                }
+            }
+            Expr::UnOp(UnOp::Not, x) => self.cond_jumps(x, !when),
+            _ => {
+                let base = self.freereg();
+                let r = match cond {
+                    Expr::BinOp(op, a, b) if branch_opcode(*op).is_some() => {
+                        let t = self.reserve();
+                        let ra = self.expr_to_rk(a);
+                        let rb = self.expr_to_rk(b);
+                        self.emit(abc(branch_opcode(*op).unwrap(), t, ra, rb));
+                        t
+                    }
+                    _ => self.expr_to_anyreg(cond),
+                };
+                self.set_freereg(base);
+                let jop = if when { P386_OP_JMPT } else { P386_OP_JMPF };
+                vec![self.emit(asbx(jop, r, 0))]
+            }
+        }
+    }
+
     fn compile_if(&mut self, conds: &[Expr], bodies: &[Vec<Stat>], else_body: &[Stat]) {
         let mut end_jumps = Vec::new();
         for (i, cond) in conds.iter().enumerate() {
-            let base = self.freereg();
-            let c = self.expr_to_anyreg(cond);
-            self.set_freereg(base);
-            let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+            let jf = self.cond_jumps(cond, false);
             self.push_scope();
             self.compile_stats(bodies.get(i).map(|v| v.as_slice()).unwrap_or(&[]));
             self.pop_scope();
@@ -648,7 +765,9 @@ impl Compiler {
             if has_more {
                 end_jumps.push(self.emit(asbx(P386_OP_JMP, 0, 0)));
             }
-            self.patch_jump_to_here(jf);
+            for j in jf {
+                self.patch_jump_to_here(j);
+            }
         }
         self.push_scope();
         self.compile_stats(else_body);
@@ -661,16 +780,16 @@ impl Compiler {
     fn compile_while(&mut self, cond: &Expr, body: &[Stat]) {
         let start = self.pc();
         let base = self.freereg();
-        let c = self.expr_to_anyreg(cond);
-        self.set_freereg(base);
-        let jf = self.emit(asbx(P386_OP_JMPF, c, 0));
+        let jf = self.cond_jumps(cond, false);
         self.push_scope();
         self.fs_mut().loops.push(LoopCtx { breaks: Vec::new(), scope_base: base });
         self.compile_stats(body);
         let loopctx = self.fs_mut().loops.pop().unwrap();
         self.pop_scope();
         self.emit_jump_back(P386_OP_JMP, 0, start);
-        self.patch_jump_to_here(jf);
+        for j in jf {
+            self.patch_jump_to_here(j);
+        }
         for b in loopctx.breaks {
             self.patch_jump_to_here(b);
         }
@@ -683,8 +802,9 @@ impl Compiler {
         self.fs_mut().loops.push(LoopCtx { breaks: Vec::new(), scope_base: base });
         self.compile_stats(body);
         // condition can see the body's locals
-        let c = self.expr_to_anyreg(cond);
-        self.emit_jump_back(P386_OP_JMPF, c, start);
+        for j in self.cond_jumps(cond, false) {
+            self.patch_jump(j, start);
+        }
         let loopctx = self.fs_mut().loops.pop().unwrap();
         self.pop_scope();
         for b in loopctx.breaks {
@@ -1204,6 +1324,9 @@ impl Compiler {
                 }
             }
             Expr::Call(c) => {
+                if self.try_intrinsic(c, dst) {
+                    return dst;
+                }
                 let save = self.freereg();
                 let base = save.max(dst);
                 self.compile_call(c, 1, base);
@@ -1373,6 +1496,9 @@ impl Compiler {
                     }
                 } else if let Some(uv) = self.resolve_upvalue(self.funcs.len() - 1, *n) {
                     self.emit(abc(P386_OP_GETUPVAL, dst, uv, 0));
+                } else if let Some(b) = button_glyph(self.name_bytes(*n)) {
+                    let k = self.add_const(Constant::Num(b << 16));
+                    self.emit(abx(P386_OP_LOADK, dst, k));
                 } else {
                     let slot = self.global_slot(*n);
                     self.emit(abx(P386_OP_GETGLOBAL, dst, slot));
@@ -1412,7 +1538,7 @@ impl Compiler {
                     self.emit(abc(P386_OP_SETUPVAL, src, uv, 0));
                 } else {
                     let slot = self.global_slot(*n);
-                    self.emit(abx(P386_OP_SETGLOBAL, src, slot));
+                    self.emit_setglobal(src, slot);
                 }
             }
             Var::Index(obj, key) => {
@@ -1485,6 +1611,19 @@ fn clone_stats(_s: &[Stat]) -> Vec<Stat> {
     vec![]
 }
 
+/// Fused compare-and-branch opcode for a comparison operator.
+fn branch_opcode(op: BinOp) -> Option<u8> {
+    Some(match op {
+        BinOp::Eq => P386_OP_BEQ,
+        BinOp::Ne => P386_OP_BNE,
+        BinOp::Lt => P386_OP_BLT,
+        BinOp::Le => P386_OP_BLE,
+        BinOp::Gt => P386_OP_BGT,
+        BinOp::Ge => P386_OP_BGE,
+        _ => return None,
+    })
+}
+
 fn bin_opcode(op: BinOp) -> Option<u8> {
     Some(match op {
         BinOp::Eq => P386_OP_EQ,
@@ -1510,6 +1649,36 @@ fn bin_opcode(op: BinOp) -> Option<u8> {
         BinOp::RotR => P386_OP_ROTR,
         BinOp::Concat => P386_OP_CONCAT,
         BinOp::And | BinOp::Or => return None,
+    })
+}
+
+/// PICO-8 predefines the button glyphs as globals: ⬅️ 0, ➡️ 1, ⬆️ 2, ⬇️ 3,
+/// 🅾️ 4, ❎ 5. A name is either one cart byte (decoded as Latin-1, so
+/// U+0080..U+00FF) or the Unicode glyph of a UTF-8 .p8 file, with an
+/// optional variation selector U+FE0F.
+fn button_glyph(name: &[u8]) -> Option<i32> {
+    const GLYPHS: [(&[u8], &[u8], i32); 6] = [
+        (b"\xc2\x8b", "\u{2b05}".as_bytes(), 0),   // ⬅
+        (b"\xc2\x91", "\u{27a1}".as_bytes(), 1),   // ➡
+        (b"\xc2\x94", "\u{2b06}".as_bytes(), 2),   // ⬆
+        (b"\xc2\x83", "\u{2b07}".as_bytes(), 3),   // ⬇
+        (b"\xc2\x8e", "\u{1f17e}".as_bytes(), 4),  // 🅾
+        (b"\xc2\x97", "\u{274e}".as_bytes(), 5),   // ❎
+    ];
+    let name = name.strip_suffix("\u{fe0f}".as_bytes()).unwrap_or(name);
+    GLYPHS.iter().find(|g| name == g.0 || name == g.1).map(|g| g.2)
+}
+
+/// Builtin slot -> (intrinsic opcode, argument count).
+fn intrinsic_for(slot: u8) -> Option<(u8, usize)> {
+    Some(match slot {
+        P386_BUILTIN_FLR => (P386_OP_FLR, 1),
+        P386_BUILTIN_CEIL => (P386_OP_CEIL, 1),
+        P386_BUILTIN_ABS => (P386_OP_ABS, 1),
+        P386_BUILTIN_SGN => (P386_OP_SGN, 1),
+        P386_BUILTIN_MIN => (P386_OP_MIN, 2),
+        P386_BUILTIN_MAX => (P386_OP_MAX, 2),
+        _ => return None,
     })
 }
 

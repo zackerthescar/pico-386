@@ -1,0 +1,35 @@
+# Real-game integration test manifest (used by tools/fetch_games.sh and ./test.sh games).
+#
+# Columns (TAB separated; '#' lines and blank lines are ignored):
+#   name     DOS name, 1-8 chars of A-Z 0-9 _
+#   source   a file in test/games/ (committed), or an http(s) URL (downloaded)
+#   sha256   SHA-256 of the source file (checked for both kinds)
+#   license  SPDX license of the game
+#   author   author of the game
+#   page     web page of the game (license and author are checked here)
+#   frames   number of frames to run (P386_FRAMES)
+#   xfail    "-" = game must pass. Otherwise the exact serial text that is
+#            expected (the test prints XFAIL; XPASS when the game works).
+#   note     why the game fails (missing feature), or "-"
+#
+# LICENSE RULE: commit a game here only if its license allows redistribution.
+# Texts of the licenses are in test/games/licenses/. All other games are
+# downloaded into cache/games/ (git-ignored) and are never committed.
+#
+# A .p8 source is converted to .p8.png with tools/mkcart.py. This tool ignores
+# __sfx__ and __music__, so the games run without sound data.
+#
+# ---- committed (permissive license) ----
+PIKORALL	pikoralli.p8	cd3ac7e99b3ac8fd379637faa643297617e13641e3b3491d75857ba99e8cc129	MIT	Ivan Notaros (nothke)	https://github.com/nothke/pikoralli/tree/e678a04f2fae4fd3f4f6f7ffa828b396bedfa995	90	-	-
+SHMUP	shmup.p8	ed7f0c1069a831393b442f0d0297e276b77a1292a0470faf8323091fc8adc8d7	Unlicense	LtauV	https://github.com/LtauV/Pico8_Space_shooter/tree/89847570e7ea67a6a037c0b9cf933a77035b5814	90	-	-
+ISHIDO	ishido.p8	14adfb9d4988062f9d7a2c1b03f1399d599e95d0876a695dc1381e5fbf524cd4	MIT	OBONO	https://github.com/obono/Pico8Works/blob/377fd120310391d625c9cbd213f57fe461ee4859/src/ishido.p8	90	-	-
+NUDGE	nudge-nudge.p8	3cff84c83eebc44d500c2f180c0229e18b19ac16d9850d1f52bb69f28466dd3f	MIT	Josh Beard (jlateralus)	https://github.com/jlbeard84/pico8-nudge-nudge/tree/b5b82e34b8517ed9efe427bb4d8efd499d20e1f3	90	-	-
+# ---- downloaded (not redistributable here) ----
+# PICO-Crate: the repository is Unlicense, but the cart holds music by Gruber
+# (Pico-8 Tunes Vol. 1) with its own license. So the cart stays out of the repo.
+CRATE	https://raw.githubusercontent.com/HarmonyHoney/pico_crate/3b0d5bdd79abd4b83e6a113d39ce2cb5dab7c1c0/crate.p8	00ba2d7eebf2ff00f86ddaeeb752e113758844bc06ac2c08bedf2f47c12ce54f	Unlicense (code); music by Gruber has its own license	Harmony Honey	https://github.com/HarmonyHoney/pico_crate/tree/3b0d5bdd79abd4b83e6a113d39ce2cb5dab7c1c0	90	-	-
+# Celeste Classic: the BBS page shows no license, so all rights stay with the authors.
+CELESTE	https://www.lexaloffle.com/bbs/cposts/1/15133.p8.png	b8c78f53bc18cd9c8830c794093a3b724d6208de9eae290f0b84403225740188	none stated (all rights reserved)	Maddy Thorson, Noel Berry	https://www.lexaloffle.com/bbs/?pid=15133	90	-	-
+# Celeste at 400m (12 fall floors): the heaviest early room. Made from CELESTE
+# with a patch, so it is never committed either.
+CEL400	patch:CELESTE:cel400.patch	f19cdb67409394621b5e00d70e478f805591df05eb5a0fb18184b128403f4f8f	none stated (all rights reserved)	Maddy Thorson, Noel Berry	https://www.lexaloffle.com/bbs/?pid=15133	90	-	-

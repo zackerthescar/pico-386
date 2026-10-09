@@ -46,6 +46,12 @@ fn opname(op: u8) -> &'static str {
         P386_OP_LE => "LE",
         P386_OP_GT => "GT",
         P386_OP_GE => "GE",
+        P386_OP_BEQ => "BEQ",
+        P386_OP_BNE => "BNE",
+        P386_OP_BLT => "BLT",
+        P386_OP_BLE => "BLE",
+        P386_OP_BGT => "BGT",
+        P386_OP_BGE => "BGE",
         P386_OP_NOT => "NOT",
         P386_OP_LEN => "LEN",
         P386_OP_PEEK => "PEEK",
@@ -63,6 +69,12 @@ fn opname(op: u8) -> &'static str {
         P386_OP_TAILCALL => "TAILCALL",
         P386_OP_RETURN => "RETURN",
         P386_OP_VARARG => "VARARG",
+        P386_OP_FLR => "FLR",
+        P386_OP_CEIL => "CEIL",
+        P386_OP_ABS => "ABS",
+        P386_OP_SGN => "SGN",
+        P386_OP_MIN => "MIN",
+        P386_OP_MAX => "MAX",
         _ => "???",
     }
 }
@@ -88,8 +100,16 @@ pub fn disasm_proto(p: &FuncProto, name: &str, out: &mut String) {
         };
         out.push_str(&format!("  K{} = {}\n", i, s));
     }
+    let mut skip = 0;
     for (pc, &ins) in p.instructions.iter().enumerate() {
+        if skip > 0 {
+            skip -= 1; // GETFIELD cache word
+            continue;
+        }
         let op = (ins & 0xff) as u8;
+        if op == P386_OP_GETFIELD {
+            skip = 2;
+        }
         let a = ((ins >> 8) & 0xff) as u8;
         let b = ((ins >> 16) & 0xff) as u8;
         let c = ((ins >> 24) & 0xff) as u8;
@@ -112,7 +132,9 @@ pub fn disasm_proto(p: &FuncProto, name: &str, out: &mut String) {
             | P386_OP_MOD | P386_OP_POW | P386_OP_BAND | P386_OP_BOR | P386_OP_BXOR
             | P386_OP_SHL | P386_OP_SHR | P386_OP_LSHR | P386_OP_ROTL | P386_OP_ROTR
             | P386_OP_EQ | P386_OP_NE | P386_OP_LT | P386_OP_LE | P386_OP_GT | P386_OP_GE
-            | P386_OP_CONCAT => format!("R{}, {}, {}", a, rk(b), rk(c)),
+            | P386_OP_BEQ | P386_OP_BNE | P386_OP_BLT | P386_OP_BLE | P386_OP_BGT | P386_OP_BGE
+            | P386_OP_CONCAT | P386_OP_MIN | P386_OP_MAX => format!("R{}, {}, {}", a, rk(b), rk(c)),
+            P386_OP_FLR | P386_OP_CEIL | P386_OP_ABS | P386_OP_SGN => format!("R{}, {}", a, rk(b)),
             P386_OP_JMP => format!("-> {} (sBx={})", pc as isize + 1 + sbx as isize, sbx),
             P386_OP_JMPF | P386_OP_JMPT | P386_OP_FORPREP | P386_OP_FORLOOP | P386_OP_TFORLOOP =>
                 format!("R{}, -> {} (sBx={})", a, pc as isize + 1 + sbx as isize, sbx),

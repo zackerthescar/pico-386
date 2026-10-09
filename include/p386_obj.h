@@ -5,13 +5,12 @@
  * Minimal heap-object support for pico386 VM.
  *
  * v1 design choices (intentionally simple — see TODO_GC.md, BYTECODE.md §6–7):
- *   - No GC, leak allocator (malloc, never free).
+ *   - Objects come from p386_gc_alloc; p386_gc.c collects them.
  *   - String: length-prefixed, NUL-terminated, FNV-1a hash precomputed.
  *     Interned via a small open-addressed table; equality is pointer compare.
- *   - Table: linear array of (key,value) entries, plus a tracked
- *     contiguous-int array_len for `#t`. O(n) lookup is fine for the small
- *     tables PICO-8 carts produce; can be promoted to a real hash later.
- *   - LEN supports STR (byte length) and TAB (array_len).
+ *   - Table: array part for t[1..n] plus an open-addressing hash part
+ *     (see p386_obj.c).
+ *   - LEN supports STR (byte length) and TAB (array part size).
  *   - CONCAT coerces NUM via a fixed-point->decimal stringifier.
  *
  * These helpers are pure C, host-testable, and called from the asm dispatcher
@@ -39,11 +38,13 @@ typedef struct P386TableEntry {
 } P386TableEntry;
 
 typedef struct P386Table {
-    P386TableEntry *entries;
-    uint32_t        len;        /* populated entries */
-    uint32_t        cap;
-    uint32_t        array_len;  /* contiguous int keys 1..N (`#t`) */
-    struct P386Table *metatable; /* NULL or set by setmetatable */
+    P386Value      *arr;        /* array part: t[1..asize] */
+    uint32_t        asize;      /* t[asize] is not nil; #t == asize */
+    uint32_t        acap;
+    P386TableEntry *hash;       /* hash part: hcap slots (power of 2) */
+    struct P386Table *metatable; /* NULL or set by setmetatable (offset 16) */
+    uint32_t        hcap;
+    uint32_t        hused;      /* non-empty hash slots (dead ones too) */
 } P386Table;
 
 typedef struct P386Upvalue {
@@ -63,6 +64,9 @@ typedef struct P386Closure {
 /* String construction / interning. */
 P386String *p386_string_new(const char *data, uint32_t len);
 P386String *p386_string_intern(const char *data, uint32_t len);
+/* Collector hooks (p386_gc.c): the intern table is weak. */
+void        p386_string_intern_reset(void);
+void        p386_string_intern_sweep(void);
 int         p386_string_eq(const P386String *a, const P386String *b);
 int         p386_string_cmp(const P386String *a, const P386String *b);
 
@@ -88,7 +92,7 @@ void p386_table_get(const P386Table *t, const P386Value *key, P386Value *out);
  * ignore for v1 to keep the asm trampoline branchless). */
 void p386_table_set(P386Table *t, const P386Value *key, const P386Value *val);
 
-/* LEN for tables: array_len. */
+/* LEN for tables: the size of the array part. */
 uint32_t p386_table_len(const P386Table *t);
 
 /* Generic-for helper: next table entry after key. If key is nil, starts at the
@@ -96,6 +100,10 @@ uint32_t p386_table_len(const P386Table *t);
  * an entry was produced, 0 at end. */
 int p386_table_next(const P386Table *t, const P386Value *key,
                     P386Value *out_key, P386Value *out_val);
+
+/* Collector hooks (p386_gc.c). */
+void p386_table_traverse(P386Table *t);
+uint32_t p386_table_free_parts(P386Table *t, int poison);
 
 #ifdef __cplusplus
 }

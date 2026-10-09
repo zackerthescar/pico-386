@@ -7,7 +7,7 @@ status: v1 design
 
 this spec is **the contract** between the rust compiler and the C runtime. anything not specified here is implementation defined and can change. anything specified here changing requires a coordinated update on both sides.
 
-open TODOs at end. things deferred from v1: GC (see `TODO_GC.md`), source-level varargs, `goto`/label, full metatables, coroutines.
+open TODOs at end. things deferred from v1: source-level varargs, `goto`/label. GC, metatables and coroutines are now implemented (§8a, §7, §8b).
 
 ---
 
@@ -34,8 +34,9 @@ value first because that's what arithmetic handlers touch most often. tag at +4.
 | 4   | TAB   | u32 Table\* (heap pointer)                    |
 | 5   | FUNC  | u32 Closure\* (heap pointer)                  |
 | 6   | CFUNC | u32 raw C function pointer                    |
+| 7   | THREAD | u32 P386Thread\* (coroutine, heap pointer; never a constant) |
 
-NUM is the only non-pointer payload. STR/TAB/FUNC are heap pointers; CFUNC is a code pointer (text section).
+NUM is the only non-pointer payload. STR/TAB/FUNC/THREAD are heap pointers; CFUNC is a code pointer (text section).
 
 ### type test pattern (asm)
 
@@ -129,6 +130,16 @@ B is 8-bit slot index (0..255). compile-time-assigned. builtin slots reserved at
 
 GETFIELD/SETFIELD are the fast-path for `t.field` syntax. C in GETFIELD and B in SETFIELD are full 8-bit constant indices (no K-flag, always constant — the field name). C in SETFIELD is an RK operand: a constructor field such as `{x=0}` stores a constant directly. when the name has a constant index above 255, the compiler emits LOADK of the name into a temp register and uses GETTABLE/SETTABLE instead.
 
+**GETFIELD inline cache.** GETFIELD is 3 words: the instruction, then two cache words.
+
+| word | contents |
+| ---- | -------- |
+| 0    | `GETFIELD A B C` |
+| 1    | address of the interned name K[C]; the loader writes it (0 if K[C] is not a string). the compiler writes 0 |
+| 2    | byte offset of the hash slot where the name was found last time; starts at 0, the dispatcher updates it |
+
+the dispatcher masks word 2 to the table's hash part and compares the key there. on a hit it does not hash or probe; on a miss it probes from the name's hash and stores the slot it found. any value in word 2 is safe. objects made by the same code (for example `init_object` in Celeste) have the same keys in the same slots, so one site usually hits for all of them. the VM writes the cache into the program buffer, so the buffer given to `p386_vm_load` must be writable. code that walks the bytecode (loader check, disassembler) skips the two words after a GETFIELD; jump offsets count them.
+
 ### arithmetic (16.16 fixed-point on NUM)
 
 | op   | hex  | operands  |
@@ -171,22 +182,37 @@ operate on the raw i32 value (no fixed-point shift), matching PICO-8 semantics.
 | GT | 0x35 | A, B, C   | `R[A] = (RK(B) > RK(C))`   |
 | GE | 0x36 | A, B, C   | `R[A] = (RK(B) >= RK(C))`  |
 
-result is BOOL. EQ/NE work on any value pair: pointer-equal for STR/TAB/FUNC/CFUNC; structural compare for NUM/BOOL/NIL. ordered comparisons (LT/LE/GT/GE) need two NUM operands or two STR operands. STR compares byte-wise (unsigned), and a prefix sorts first. Any other mix traps (type error). The compiler emits GT/GE as they are; no fused compare-jump exists.
+result is BOOL. EQ/NE work on any value pair: pointer-equal for STR/TAB/FUNC/CFUNC; structural compare for NUM/BOOL/NIL. ordered comparisons (LT/LE/GT/GE) need two NUM operands or two STR operands. STR compares byte-wise (unsigned), and a prefix sorts first. Any other mix traps (type error), unless a metamethod (`__eq`, `__lt`, `__le`) applies. EQ/NE try `__eq` only for two different tables when one of them has a metatable.
+
+### fused compare-and-branch
+
+| op  | hex  | operands  | semantics                                             |
+| --- | ---- | --------- | ----------------------------------------------------- |
+| BEQ | 0x60 | A, B, C   | as EQ, then decide the JMPF/JMPT on R[A] that follows |
+| BNE | 0x61 | A, B, C   | as NE, idem                                           |
+| BLT | 0x62 | A, B, C   | as LT, idem                                           |
+| BLE | 0x63 | A, B, C   | as LE, idem                                           |
+| BGT | 0x64 | A, B, C   | as GT, idem                                           |
+| BGE | 0x65 | A, B, C   | as GE, idem                                           |
+
+a Bxx is always followed by `JMPF A sBx` or `JMPT A sBx` with the same A (a temporary). when the comparison has a direct result (NUM, STR, BOOL, NIL, or tables without `__eq`), the VM does not write R[A]: it reads the next word, jumps (JMPF: result false, JMPT: result true; sBx is from the word after the jump) or skips the jump word. a backward jump is a GC safe point. when a metamethod gives the result, Bxx acts as the plain opcode: the metamethod frame stores the boolean in R[A] and returns to the jump word, which then runs as usual. so jump patching in the compiler sees only the JMPF/JMPT word.
+
+the compiler compiles the condition of `if`, `while` and `repeat` as jumps: `and`, `or` and `not` only route jumps (no boolean is made), and each comparison in the condition becomes Bxx + JMPF/JMPT. a comparison used as a value (`local b = x < y`) still uses EQ..GE.
 
 ### unary
 
 | op    | hex  | operands | semantics                                              |
 | ----- | ---- | -------- | ------------------------------------------------------ |
-| NOT   | 0x37 | A, B     | `R[A] = (R[B] is nil or false) ? true : false`         |
-| LEN   | 0x38 | A, B     | `R[A] = #R[B]` (string len for STR, array_len for TAB) |
-| PEEK  | 0x39 | A, B     | `R[A] = mem8[R[B]]`  (PICO-8 `@`)                      |
-| PEEK2 | 0x3A | A, B     | `R[A] = mem16[R[B]]` (PICO-8 `$`)                      |
+| NOT   | 0x37 | A, B     | `R[A] = (RK(B) is nil or false) ? true : false`        |
+| LEN   | 0x38 | A, B     | `R[A] = #RK(B)` (string len for STR, array_len for TAB) |
+| PEEK  | 0x39 | A, B     | `R[A] = mem8[RK(B)]`  (PICO-8 `@`)                     |
+| PEEK2 | 0x3A | A, B     | `R[A] = mem16[RK(B)]` (PICO-8 `$`)                     |
 
 ### string
 
 | op     | hex  | operands  | semantics                       |
 | ------ | ---- | --------- | ------------------------------- |
-| CONCAT | 0x3B | A, B, C   | `R[A] = R[B] .. R[C]`           |
+| CONCAT | 0x3B | A, B, C   | `R[A] = RK(B) .. RK(C)`         |
 
 interns the result. coerces NUM to STR via `tostring` (decimal, with optional fraction).
 
@@ -368,14 +394,17 @@ caller wants `f(a, b)` with 1 expected return:
 2. emits `CALL 5, 3, 2` (B=nargs+1=3, C=nrets+1=2).
 3. CALL handler:
    - load `f` from R[5]; type-check TAG_FUNC or TAG_CFUNC.
-   - if TAG_CFUNC: invoke `cfunc(vm, 2)` directly. C function reads args from `vm->top - 2 .. vm->top`, writes returns starting at `vm->base[5]` (the same slot the function was in), updates `vm->top`. handler advances IP. no CallFrame push.
-   - if TAG_FUNC: push CallFrame `{ return_ip = ip+4, return_base = base, closure = current, return_reg = 5, want_rets = 1 }`. set `base = current_base + 6` (so R[6] becomes callee's R[0]). set `closure = R[5].func`. set `ip = closure->proto->bytecode`. dispatch.
+   - if TAG_CFUNC: call `cfunc(vm, &R[6], nargs=2, want_rets=1)`. it reads args from `R[6..]` and writes its results there, then returns the count. the handler moves `min(count, want)` results down to `R[5..]` and pads with nil. a statement call (C = 1) keeps no results. no CallFrame push.
+   - if TAG_FUNC: push CallFrame `{ return_ip = ip+4, return_base = base, closure = current, return_reg = 5, want_rets = 1 }`. **the callee frame starts at the first argument**: `base = &R[6]`, so the arguments are already the callee's `R[0..]` (as in Lua). varargs (extra arguments of a vararg function) are saved to the varargs stack first; then `R[min(nargs, n_params) .. n_regs)` is cleared to nil with `rep stosd`. set `closure`, `ip = closure->proto->bytecode`. dispatch.
+   - TFORCALL iterators and metamethod frames do not have their arguments in place: their frame goes above the caller's registers (`base = caller_base + caller_n_regs`) and the arguments are copied.
 
 4. callee runs; eventually `RETURN R, n`:
-   - copy `base[R..R+n-1]` to `caller_base[caller_return_reg ..]`.
+   - copy `base[R..R+n-1]` to `caller_base[caller_return_reg ..]` (forward: the destination is below the source).
    - pad with nil if `n < want_rets`.
    - restore `base = caller_base`, `ip = caller_return_ip`, pop CallFrame.
    - dispatch.
+
+**GC note.** an in-place callee frame can end below its caller's frame. the collector scans the stack to the highest `base + n_regs` of all frames (`p386_frames_end`), not to the end of the current frame.
 
 ---
 
@@ -474,27 +503,25 @@ CONCAT allocates a new String of total length, memcpy's parts, computes hash, lo
 
 ## 7. tables
 
-lua-style hybrid array+hash. crib heavily from `lua-5.1/src/ltable.c` (MIT licensed; can vendor in).
+`src/p386_obj.c`. lua-style array part + hash part:
 
 ```c
-typedef struct {
-    Value*    array;
-    uint32_t  array_len;     // logical length (highest contiguous int key)
-    uint32_t  array_cap;
-    Node*     hash;
-    uint8_t   hash_lsize;    // log2 of hash capacity
-    Table*    metatable;     // NULL or set by setmetatable
-    // GC bits added later
-} Table;
-
-typedef struct {
-    Value     key;
-    Value     val;
-    int32_t   next;          // Brent's chaining; -1 = end of bucket
-} Node;
+typedef struct P386Table {
+    P386Value      *arr;        // array part: t[1..asize]          offset 0
+    uint32_t        asize;      // t[asize] is not nil; #t == asize        4
+    uint32_t        acap;       //                                         8
+    P386TableEntry *hash;       // hcap slots of {key, val}, 16 bytes     12
+    P386Table      *metatable;  // NULL or set by setmetatable            16
+    uint32_t        hcap;       // power of two, or 0 (no hash part)      20
+    uint32_t        hused;      // non-empty slots (dead ones too)        24
+} P386Table;                    // GC header is before the object (§8a)
 ```
 
-resize heuristic: same as lua's `rehash` — count keys by category (positive int, other), pick array_cap as the largest power-of-two such that the array part is ≥50% full, hash takes the rest.
+- **array part.** an integer key `k` with `1 <= k <= asize` is `arr[k-1]`. `t[asize+1] = v` appends, then moves `asize+1, asize+2, ...` out of the hash part while they are there, so keys set out of order end up in the array. setting `t[asize] = nil` trims `asize` past trailing nils, so `#t == asize` is always a border. other integer keys go to the hash part.
+- **hash part.** open addressing, linear probing, load factor < 3/4, resize to the live entries. string keys use the hash in the string (FNV-1a) and compare by pointer (interned); other keys use a mixed hash of tag and value.
+- **deleted keys.** `t[k] = nil` keeps the key with a nil value, so `next` finds it while `pairs` runs. the collector turns such slots into `DEAD_KEY` (tag 0xFF): the key is not marked any more, lookups skip it, and `next` still matches its bits. a resize drops them.
+- **next** is O(1) per step: array part, then hash slots in order.
+- **asm fast paths** (`p386_dispatch.asm`): GETFIELD, GETTABLE, SETFIELD and SETTABLE read or write inline for an integer key inside the array part or a string key in the hash part (`HASH_FIND_STR`). an absent key, a nil value (may need `__index`), a table with a metatable on writes, a nil store, an append or a new key go to the general path, which calls C.
 
 ### metatables
 
@@ -571,6 +598,33 @@ at CLOSURE execution:
 this design keeps CLOSURE's bytecode encoding clean (single 4-byte instruction) — all the upvalue metadata lives in the FuncProto.
 
 ---
+
+## 8a. garbage collector
+
+`src/p386_gc.c`: precise stop-the-world mark-sweep. it is precise: it reads only tagged values and known object fields, never raw memory.
+
+- **objects.** `p386_gc_alloc` puts a `P386GCHeader` (next, gray, size, type, mark, flags) **before** each object. object pointers and struct layouts do not change. types: string, table, closure, upvalue, thread. a table's entries and a coroutine's stacks are owned memory: they are counted in the heap size and freed with the object.
+- **trigger.** an allocation only sets `p386_gc_pending` when the heap reaches max(64 KB, 2 × live size after the last collection). it never collects.
+- **safe points.** collection runs only where every live value is in a root:
+  - the dispatcher's `GC_POLL`: backward JMP/JMPF/JMPT (also when a Bxx takes the jump), FORLOOP and TFORLOOP when they loop, and Lua function entry (CALL, TAILCALL, metamethod frames). the cost when nothing is pending is one compare and branch.
+  - the host: `p386_vm_call_global` collects before a callback, when no frame is active.
+  - thus C code (builtins, `p386_meta.c`, `p386_co.c`) can keep object pointers in locals: no collection can occur until it returns to the dispatcher.
+- **roots.** globals; the running thread's stack from its start to `base + n_regs` of the current frame (slots above can hold stale pointers to freed objects, so they are not scanned); its varargs `[0, vararg_sp)`; the current closure and each frame's `return_closure`; open upvalues; the running coroutine; the main thread's saved context while a coroutine runs; the cached metamethod name strings.
+- **traversal.** tables: live keys, values and the metatable. closures: upvalues. closed upvalues: the value (an open upvalue's value is a stack slot, marked by the stack scan). threads: body, resumer, saved context. the gray list is iterative, so deep structures do not use C stack.
+- **weak intern table.** after marking, `p386_string_intern_sweep` rebuilds the intern table with the marked strings only. a constant string that is collected is interned again by the next LOADK.
+- **frames are always clean.** a frame's registers are cleared on entry, so every slot in the scanned range is nil or a value that was live at the last collection.
+- **test aids.** `p386_gc_stress` collects at every safe point; `p386_gc_poison` fills freed memory with 0xDD. the unit tests run Lua programs with both.
+- `stat(0)` returns the heap size in KB.
+
+## 8b. coroutines
+
+`src/p386_co.c`: `cocreate`, `coresume`, `yield`, `costatus` (`"suspended"`, `"running"`, `"normal"`, `"dead"`).
+
+- **threads.** a coroutine is a `P386Thread` heap object with its own value stack (512 slots), call frames (64) and varargs stack (64), about 7 KB, allocated at the first resume. the main thread's `P386Thread` is in `P386VMState` and uses the VM's arrays. the dispatcher addresses the running thread's stacks through `vm->stack_start`, `frames`, `frames_max`, `varargs` and `varargs_max`.
+- **switching without re-entry.** `coresume` and `yield` store a request (`switch_kind`, `switch_target`, up to 32 values in `xfer`, the result window of their CALL) and return `P386_VM_SWITCH`. the dispatcher exits as on an error. `p386_vm_run` (C) saves the running thread, loads the other one, writes the values into its pending CALL window (nil-padded to `want_rets`), and starts the dispatcher again at the saved ip (`p386_vm_exec(vm, 1)`). the C stack does not grow.
+- **tail position.** after `return coresume(...)` / `return yield(...)` the frame is already gone. the dispatcher stores A+1 in `vm->tail_reg`; the thread then continues at a per-thread `RETURN A+1, 0` instruction (`tail_insn`).
+- **end of a coroutine.** RETURN at depth 0 stores the first result in `vm->ret_base`. on that, or on an error, the coroutine becomes dead: its open upvalues are closed (closures keep the values), its stacks are freed at once, and the resumer gets `true, results...` or `false, message`. an error in a coroutine does not stop the cart. `P386_VM_ERR_QUIT` (Esc in `flip`) is not caught.
+- **limits.** yield is not possible from a C builtin or a CFUNC metamethod (C is in the middle of a call); a Lua metamethod or `foreach` callback can yield. a stack overflow in a coroutine is an error result.
 
 ## 9. C functions vs lua functions
 
@@ -756,6 +810,21 @@ asm dispatch uses dedicated registers:
 
 eax/ebx/ecx/edx are scratch within handlers.
 
+**dispatch.** each handler ends with its own copy of the `NEXT` macro (replicated, token-threaded dispatch):
+
+```nasm
+mov  eax, [esi]                ; instruction word
+add  esi, 4
+movzx edx, al                  ; opcode
+jmp  [dispatch_table + edx*4]
+```
+
+there is no shared loop and no per-instruction bookkeeping: `vm->ip` and `vm->last_opcode` are written only when the dispatcher exits (`done`). `dispatch_next` is one more copy of `NEXT`, for conditional jumps and slow paths.
+
+**operands.** the `LOAD_RK` macro reads a register operand inline; only a constant calls `load_rk`. string constants are interned once at load into `vm->kstr` (indexed by string table index, GC roots), so LOADK, RK and GETFIELD/SETFIELD names never hash a string at run time.
+
+**profiling builds.** `make prof` (`PROF.EXE`, nasm `-DPROFILE`) counts instructions per frame phase under QEMU `-icount`: builtins, table and string helpers, GC, dispatch, bytecodes run. `make profops` (`PROFOPS.EXE`, also `-DPROFILE_OPS`) adds instructions per opcode. `./test.sh prof` runs them on the real games; `PROF_EXE=PROFOPS` selects the second. the normal build has none of this code.
+
 ---
 
 ## 13. FFI boundary
@@ -784,13 +853,11 @@ VM is entirely C+asm. zero rust calls at runtime. consumes the byte buffer direc
 
 | topic                        | status                | when to revisit                              |
 | ---------------------------- | --------------------- | -------------------------------------------- |
-| garbage collection           | leak forever          | when carts OOM in <30 min runtime — see TODO_GC.md |
 | source-level varargs (`...`) | compile error         | if real carts use them; survey first         |
 | `goto` / labels              | parser ok, codegen NO | once the rest is stable; needs forward-ref pass |
 | ADDI / SUBI / MULI imm ops   | not in v1             | if `i = i + 1` profiling-dominant            |
 | comparison skip-next style   | not in v1             | if conditional-heavy carts profile slow      |
 | `__tostring`                 | not implemented       | needs a Lua frame from inside `tostr`/`print` |
-| coroutines                   | not in v1             | indefinitely; rare in PICO-8 carts           |
 | string-num coercion in arith | trap on mismatch      | if cart compat demands; lua coerces silently |
 | strict argument count        | silent nil-pad        | maybe never; lua is also lenient here        |
 
@@ -808,7 +875,7 @@ after this spec is committed:
 6. write `include/builtins.h` enumerating builtin slots
 7. write `src/p386_loader.c` for `program_load`
 8. write `src/p386_value.c` for value/string/table primitives
-9. write `src/p386_dispatch.asm` for threaded-dispatch core (distributed dispatch tail)
+9. write `src/p386_dispatch.asm` for threaded-dispatch core (distributed dispatch tail: done, see §12)
 10. write `src/p386_handlers.c` (or `.asm`) for individual opcode handlers
 11. write `src/p386_builtins.c` with C builtin implementations
 12. write end-to-end smoke test: compile `local x = 1+2; print(x)`, run it, check `3` on screen

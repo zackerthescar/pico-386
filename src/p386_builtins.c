@@ -3,6 +3,8 @@
 #include <string.h>
 #include "p386_builtins.h"
 #include "p386_obj.h"
+#include "p386_gc.h"
+#include "p386_co.h"
 #include "mem.h"
 #include "input.h"
 #include "gfx.h"
@@ -10,7 +12,7 @@
 
 #include "p386_trig.inc"
 
-static void set_nil_results(P386Value *args, uint8_t want_rets) {
+static __inline void set_nil_results(P386Value *args, uint8_t want_rets) {
     uint8_t i;
     if (!args) return;
     for (i = 0; i < want_rets; i++) {
@@ -19,7 +21,7 @@ static void set_nil_results(P386Value *args, uint8_t want_rets) {
     }
 }
 
-static int32_t arg_num(P386Value *args, uint8_t nargs, uint8_t idx, int32_t def) {
+static __inline int32_t arg_num(P386Value *args, uint8_t nargs, uint8_t idx, int32_t def) {
     if (!args || idx >= nargs || args[idx].tag == P386_TAG_NIL) return def;
     if (args[idx].tag != P386_TAG_NUM) return def;
     return args[idx].value >> 16;
@@ -133,7 +135,7 @@ int p386_builtin_pairs(P386VMState *vm, P386Value *args,
  * want_rets 0 means either "no results" (statement call) or "all results"
  * (last argument of another call); CALL copies as many values as we return,
  * so a builtin must always write and return its results. */
-static int ret_num(P386Value *a, uint8_t w, int32_t fp) {
+static __inline int ret_num(P386Value *a, uint8_t w, int32_t fp) {
     (void)w;
     if (!a) return 0;
     a[0].value = fp;
@@ -142,13 +144,13 @@ static int ret_num(P386Value *a, uint8_t w, int32_t fp) {
 }
 
 /* No results (poke, srand, ...). CALL pads any wanted values with nil. */
-static int ret_none(P386Value *a, uint8_t w) {
+static __inline int ret_none(P386Value *a, uint8_t w) {
     set_nil_results(a, w);
     return 0;
 }
 
 /* A single nil result. */
-static int ret_nil(P386Value *a, uint8_t w) {
+static __inline int ret_nil(P386Value *a, uint8_t w) {
     set_nil_results(a, w);
     if (!a) return 0;
     if (w == 0) { a[0].value = 0; a[0].tag = P386_TAG_NIL; }
@@ -156,12 +158,12 @@ static int ret_nil(P386Value *a, uint8_t w) {
 }
 
 /* Raw 16.16 bits of arg idx, or a default if missing/non-number. */
-static int32_t arg_fp(P386Value *a, uint8_t n, uint8_t idx, int32_t def) {
+static __inline int32_t arg_fp(P386Value *a, uint8_t n, uint8_t idx, int32_t def) {
     if (!a || idx >= n || a[idx].tag != P386_TAG_NUM) return def;
     return a[idx].value;
 }
 
-static P386Table *arg_table(P386Value *a, uint8_t n, uint8_t idx) {
+static __inline P386Table *arg_table(P386Value *a, uint8_t n, uint8_t idx) {
     if (!a || idx >= n || a[idx].tag != P386_TAG_TAB) return 0;
     return (P386Table *)(uintptr_t)a[idx].value;
 }
@@ -667,14 +669,14 @@ int p386_builtin_sub(P386VMState *vm, P386Value *a, uint8_t n, uint8_t w) {
  * parse arguments. Coordinates are floored (the integer part of 16.16). *
  * ===================================================================== */
 
-static int arg_truthy(P386Value *a, uint8_t n, uint8_t idx) {
+static __inline int arg_truthy(P386Value *a, uint8_t n, uint8_t idx) {
     if (!a || idx >= n) return 0;
     if (a[idx].tag == P386_TAG_NIL) return 0;
     if (a[idx].tag == P386_TAG_BOOL) return a[idx].value != 0;
     return 1;
 }
 
-static int arg_present(P386Value *a, uint8_t n, uint8_t idx) {
+static __inline int arg_present(P386Value *a, uint8_t n, uint8_t idx) {
     return a && idx < n && a[idx].tag != P386_TAG_NIL;
 }
 
@@ -1097,6 +1099,8 @@ int p386_builtin_stat(P386VMState *vm, P386Value *a, uint8_t n, uint8_t w) {
     int32_t v = 0;
     (void)vm;
     switch (arg_num(a, n, 0, 0)) {
+    case 0:                                     /* Lua memory, KB */
+        return ret_num(a, w, (int32_t)(((uint64_t)p386_gc_bytes() << 16) / 1024));
     case 7: v = p386_host.fps; break;           /* current fps */
     case 8:                                     /* target fps */
     case 9: v = p386_host.target_fps; break;
@@ -1145,11 +1149,12 @@ static int ret_str(P386Value *a, const char *s) {
 
 int p386_builtin_type(P386VMState *vm, P386Value *a, uint8_t n, uint8_t w) {
     static const char *const names[] = {
-        "nil", "boolean", "number", "string", "table", "function", "function"
+        "nil", "boolean", "number", "string", "table", "function", "function",
+        "thread"
     };
     uint32_t tag = (a && n > 0) ? a[0].tag : P386_TAG_NIL;
     (void)vm; (void)w;
-    return ret_str(a, tag <= P386_TAG_CFUNC ? names[tag] : "userdata");
+    return ret_str(a, tag <= P386_TAG_THREAD ? names[tag] : "userdata");
 }
 
 /* Values that fit in the value stack from a[] onward. */
@@ -1332,6 +1337,72 @@ int p386_builtin_getmetatable(P386VMState *vm, P386Value *a, uint8_t n, uint8_t 
     return 1;
 }
 
+/* ---- persistent cart data (0x5E00-0x5EFF: 64 numbers) -------------- */
+
+#define CARTDATA_ADDR 0x5E00u
+
+/* cartdata(id): open the save slot. Returns true if saved data was loaded.
+ * The host keeps 0x5E00-0x5EFF on disk (p386_host.cartdata_open). */
+int p386_builtin_cartdata(P386VMState *vm, P386Value *a, uint8_t n, uint8_t w) {
+    static int opened;
+    const P386String *id;
+    uint32_t i;
+    int loaded = 0;
+    (void)w;
+    if (!a || n == 0 || a[0].tag != P386_TAG_STR) {
+        vm->error_msg = "cartdata: expected id string";
+        return P386_VM_ERR_TYPE;
+    }
+    id = (const P386String *)(uintptr_t)a[0].value;
+    if (id->len == 0 || id->len > 64) {
+        vm->error_msg = "cartdata: id must have 1-64 characters";
+        return P386_VM_ERR_TYPE;
+    }
+    for (i = 0; i < id->len; i++) {
+        char c = id->data[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
+            vm->error_msg = "cartdata: id must use a-z, 0-9 and _";
+            return P386_VM_ERR_TYPE;
+        }
+    }
+    if (opened && p386_host.cartdata_open) {
+        vm->error_msg = "cartdata() can only be called once";
+        return P386_VM_ERR_TYPE;
+    }
+    opened = p386_host.cartdata_open != 0;
+    if (p386_host.cartdata_open) {
+        loaded = p386_host.cartdata_open(id->data, p8_ram.raw + CARTDATA_ADDR);
+    }
+    set_bool(&a[0], loaded);
+    return 1;
+}
+
+/* dget(i): number i (0-63) of the save slot. */
+int p386_builtin_dget(P386VMState *vm, P386Value *a, uint8_t n, uint8_t w) {
+    int32_t i = arg_num(a, n, 0, 0);
+    uint8_t *p;
+    (void)vm;
+    if (i < 0 || i > 63) return ret_num(a, w, 0);
+    p = p8_ram.raw + CARTDATA_ADDR + (uint32_t)i * 4u;
+    return ret_num(a, w, (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                                   ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24)));
+}
+
+/* dset(i, v): set number i (0-63) of the save slot. The host writes the
+ * slot to disk when it changes. */
+int p386_builtin_dset(P386VMState *vm, P386Value *a, uint8_t n, uint8_t w) {
+    int32_t i = arg_num(a, n, 0, 0);
+    uint32_t v = (uint32_t)arg_fp(a, n, 1, 0);
+    uint8_t *p;
+    (void)vm;
+    if (i >= 0 && i <= 63) {
+        p = p8_ram.raw + CARTDATA_ADDR + (uint32_t)i * 4u;
+        p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+        p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+    }
+    return ret_none(a, w);
+}
+
 int p386_builtin_rawlen(P386VMState *vm, P386Value *a, uint8_t n, uint8_t w) {
     (void)vm;
     if (!a || n == 0) return ret_nil(a, w);
@@ -1501,7 +1572,17 @@ const P386BuiltinDef p386_builtin_defs[P386_BUILTIN_COUNT] = {
     { P386_BUILTIN_RELOAD,   "reload",   p386_builtin_reload },
     { P386_BUILTIN_CSTORE,   "cstore",   p386_builtin_cstore },
     { P386_BUILTIN_SETMETATABLE, "setmetatable", p386_builtin_setmetatable },
-    { P386_BUILTIN_GETMETATABLE, "getmetatable", p386_builtin_getmetatable }
+    { P386_BUILTIN_GETMETATABLE, "getmetatable", p386_builtin_getmetatable },
+    { P386_BUILTIN_COCREATE, "cocreate", p386_builtin_cocreate },
+    { P386_BUILTIN_CORESUME, "coresume", p386_builtin_coresume },
+    { P386_BUILTIN_COSTATUS, "costatus", p386_builtin_costatus },
+    { P386_BUILTIN_YIELD,    "yield",    p386_builtin_yield },
+    { P386_BUILTIN_T,        "t",        p386_builtin_time },
+    { P386_BUILTIN_MENUITEM, "menuitem", p386_builtin_noop },
+    { P386_BUILTIN_EXTCMD,   "extcmd",   p386_builtin_noop },
+    { P386_BUILTIN_CARTDATA, "cartdata", p386_builtin_cartdata },
+    { P386_BUILTIN_DGET,     "dget",     p386_builtin_dget },
+    { P386_BUILTIN_DSET,     "dset",     p386_builtin_dset }
 };
 
 void p386_register_builtins(P386VMState *vm) {

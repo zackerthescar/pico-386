@@ -114,6 +114,12 @@ int p386_builtin_rawequal(P386VMState *vm, P386Value *args,
                           uint8_t nargs, uint8_t want_rets);
 int p386_builtin_rawlen(P386VMState *vm, P386Value *args,
                         uint8_t nargs, uint8_t want_rets);
+int p386_builtin_cartdata(P386VMState *vm, P386Value *args,
+                          uint8_t nargs, uint8_t want_rets);
+int p386_builtin_dget(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
+int p386_builtin_dset(P386VMState *vm, P386Value *args,
+                      uint8_t nargs, uint8_t want_rets);
 int p386_builtin_setmetatable(P386VMState *vm, P386Value *args,
                               uint8_t nargs, uint8_t want_rets);
 int p386_builtin_getmetatable(P386VMState *vm, P386Value *args,
@@ -135,6 +141,9 @@ typedef struct P386Host {
                                    nonzero = stop the cart */
     uint8_t *cart_rom;          /* reload()/cstore() source; NULL = none */
     uint32_t cart_rom_size;
+    /* cartdata(id): load the 256-byte save slot of id into data. Returns 1
+     * if saved data existed. NULL = no persistence (memory only). */
+    int (*cartdata_open)(const char *id, uint8_t *data);
 } P386Host;
 
 extern P386Host p386_host;

@@ -602,22 +602,32 @@ fn with_prelude(src: &str) -> alloc::string::String {
 /// Parse and compile PICO-8 Lua source into a FuncProto. Returns None on
 /// parse or codegen error. The builtin Lua prelude is prepended first.
 pub fn compile(src: &str) -> Option<bytecode::FuncProto> {
-    let full = with_prelude(src);
-    let mut nt = NameTable::new();
-    let chunk = p8lua::grammar(&full, &mut nt).ok()?;
-    let comp = compiler::Compiler::new(nt);
-    comp.compile_chunk(chunk)
+    compile_full(&with_prelude(src)).ok()
+}
+
+/// Parse and compile. Calls such as `flr(x)` become intrinsic opcodes. If
+/// the cart assigns one of those globals (`function abs() ... end`), the
+/// compile is done again with intrinsics off for that name.
+fn compile_full(full: &str) -> Result<bytecode::FuncProto, alloc::string::String> {
+    use alloc::string::ToString;
+    let mut no_intrinsic = Vec::new();
+    loop {
+        let mut nt = NameTable::new();
+        let chunk = p8lua::grammar(full, &mut nt).map_err(|e| e.to_string())?;
+        let mut comp = compiler::Compiler::with_no_intrinsic(nt, no_intrinsic.clone());
+        let proto = comp.compile_chunk_keep(chunk);
+        let conflicts = comp.intrinsic_conflicts();
+        if conflicts.is_empty() {
+            return proto.ok_or_else(|| "codegen failed".to_string());
+        }
+        no_intrinsic.extend(conflicts);
+    }
 }
 
 /// Host-only variant returning a textual error.
 #[cfg(feature = "std")]
 pub fn compile_source(src: &str) -> Result<bytecode::FuncProto, alloc::string::String> {
-    use alloc::string::ToString;
-    let full = with_prelude(src);
-    let mut nt = NameTable::new();
-    let chunk = p8lua::grammar(&full, &mut nt).map_err(|e| e.to_string())?;
-    let comp = compiler::Compiler::new(nt);
-    comp.compile_chunk(chunk).ok_or_else(|| "codegen failed".to_string())
+    compile_full(&with_prelude(src))
 }
 
 /// Host-only: compile a cart source file from disk, expanding `#include`

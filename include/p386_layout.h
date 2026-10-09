@@ -79,6 +79,21 @@ P386_LAYOUT_STATIC_ASSERT(err_bounds, P386_VM_ERR_BOUNDS == -5);
 P386_LAYOUT_STATIC_ASSERT(err_unimpl, P386_VM_ERR_UNIMPL == -6);
 P386_LAYOUT_STATIC_ASSERT(call_frame_post, offsetof(P386CallFrame, post) == 18);
 P386_LAYOUT_STATIC_ASSERT(table_metatable, offsetof(P386Table, metatable) == 16);
+P386_LAYOUT_STATIC_ASSERT(table_arr, offsetof(P386Table, arr) == 0);
+P386_LAYOUT_STATIC_ASSERT(table_asize, offsetof(P386Table, asize) == 4);
+P386_LAYOUT_STATIC_ASSERT(table_hash, offsetof(P386Table, hash) == 12);
+P386_LAYOUT_STATIC_ASSERT(table_hcap, offsetof(P386Table, hcap) == 20);
+P386_LAYOUT_STATIC_ASSERT(table_entry_size, sizeof(P386TableEntry) == 16);
+P386_LAYOUT_STATIC_ASSERT(string_hash, offsetof(P386String, hash) == 4);
+P386_LAYOUT_STATIC_ASSERT(vm_stack_start, offsetof(P386VMState, stack_start) == 51276);
+P386_LAYOUT_STATIC_ASSERT(vm_frames, offsetof(P386VMState, frames) == 51280);
+P386_LAYOUT_STATIC_ASSERT(vm_frames_max, offsetof(P386VMState, frames_max) == 51284);
+P386_LAYOUT_STATIC_ASSERT(vm_varargs, offsetof(P386VMState, varargs) == 51288);
+P386_LAYOUT_STATIC_ASSERT(vm_varargs_max, offsetof(P386VMState, varargs_max) == 51292);
+P386_LAYOUT_STATIC_ASSERT(vm_ret_base, offsetof(P386VMState, ret_base) == 51296);
+P386_LAYOUT_STATIC_ASSERT(vm_tail_reg, offsetof(P386VMState, tail_reg) == 51300);
+P386_LAYOUT_STATIC_ASSERT(vm_kstr, offsetof(P386VMState, kstr) == 51304);
+P386_LAYOUT_STATIC_ASSERT(vm_switch, P386_VM_SWITCH == -8);
 
 #endif /* __386__ */
 

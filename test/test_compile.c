@@ -4,6 +4,7 @@
 #include "test.h"
 #include "rust.h"
 #include "p386_vm.h"
+#include "p386_gc.h"
 #include "builtins.h"
 #include "mem.h"
 #include "vga.h"
@@ -1227,5 +1228,519 @@ TEST(meta_lt_le) {
         "for i=2,#t do local j=i while j>1 and t[j]<t[j-1] do\n"
         "  t[j],t[j-1]=t[j-1],t[j] j-=1 end end\n"
         "return t[1].v*1000+t[2].v*100+t[3].v*10+t[4].v", 1359);
+    PASS();
+}
+
+/* GETFIELD remembers the hash slot of its last hit. One site sees tables
+ * of different shapes, a table that grows (rehash moves keys), deleted
+ * keys, a missing key with and without __index, and an array-only table. */
+TEST(getfield_inline_cache) {
+    EXPECT_INT(
+        "local function get(t) return t.x end\n"
+        "local a={x=1,y=2} local b={y=3,z=4,x=5} local c={q=0,x=7}\n"
+        "local s=get(a)+get(b)+get(c)+get(a)\n"           /* 1+5+7+1 = 14 */
+        "for i=1,20 do a['k'..i]=i end s+=get(a)*100\n"   /* rehash: +100 */
+        "a.x=nil s+=(get(a)==nil and 1000 or 0)\n"         /* dead key */
+        "a.x=9 s+=get(a)*10\n"                             /* back: +90 */
+        "local p=setmetatable({},{__index={x=6}}) s+=get(p)*1000\n"
+        "s+=(get({1,2,3})==nil and 10000 or 0)\n"
+        "return s", 14 + 100 + 1000 + 90 + 6000 + 10000);
+    /* Many objects with the same keys in the same order (init_object). */
+    EXPECT_INT(
+        "local objs={} for i=1,30 do add(objs,{type=i%3,x=i,y=-i,hitbox={w=8}}) end\n"
+        "local s=0 for o in all(objs) do if o.type==1 then s+=o.x+o.hitbox.w end end\n"
+        "return s", (1+4+7+10+13+16+19+22+25+28) + 10*8);
+    PASS();
+}
+
+/* Conditions compile to jumps (BEQ..BGE + JMPF/JMPT); check every route
+ * against the value form of the same expression. */
+TEST(cond_jumps_truth_table) {
+    /* f(a,b) gives one bit per condition; v() is the value form. */
+    EXPECT_INT(
+        "local function f(a,b) local r=0\n"
+        " if a==b then r+=1 end if a~=b then r+=2 end\n"
+        " if a<b and b<10 then r+=4 end if a<b or a>5 then r+=8 end\n"
+        " if not (a<=b) then r+=16 end if not a or b>=3 then r+=32 end\n"
+        " if (a>1 and b>1) or (a==0 and not (b==0)) then r+=64 end\n"
+        " if a and b==nil then r+=128 end\n"
+        " return r end\n"
+        "local function v(a,b) local r=0\n"
+        " local c={a==b, a~=b, a<b and b<10, a<b or a>5, not (a<=b),\n"
+        "  not a or b>=3, (a>1 and b>1) or (a==0 and not (b==0))}\n"
+        " for i=1,7 do if c[i] then r+=2^(i-1) end end return r end\n"
+        "local s=0 local w={0,1,2,3,6,11}\n"
+        "for x in all(w) do for y in all(w) do\n"
+        " if f(x,y)~=v(x,y) then s+=1 end end end\n"
+        "return s*1000+f(0,3)", 2 + 4 + 8 + 32 + 64);
+    /* nil, false and mixed types; strings use the string compare. */
+    EXPECT_INT(
+        "local r=0 local n,t,z=nil,false,0\n"
+        "if n==nil then r+=1 end if t~=nil then r+=2 end if z then r+=4 end\n"
+        "if 1=='1' then r+=8 end if 'ab'<'b' then r+=16 end\n"
+        "if 'b'>='b' and not ('a'>'b') then r+=32 end\n"
+        "if n and n.x then r+=64 end if not (n or t) then r+=128 end\n"
+        "return r", 1 + 2 + 4 + 16 + 32 + 128);
+    /* while and repeat: forward and backward fused branches. */
+    EXPECT_INT(
+        "local i,s=0,0 while i<10 and s~=21 do i+=1 s+=i end\n"
+        "local j=0 repeat j+=1 until j>=7 or j==100\n"
+        "local k=0 repeat k+=1 until not (k<5)\n"
+        "return s*100+j*10+k", 2100 + 70 + 5);
+    PASS();
+}
+
+/* ---- garbage collector ----------------------------------------------- */
+
+TEST(gc_garbage_loop_stays_bounded) {
+    /* 20000 short-lived tables are about 2 MB without collection. */
+    EXPECT_INT("for i=1,20000 do local t={i,i+1} end return 1", 1);
+    if (p386_gc_bytes() > 256UL * 1024UL) FAIL("heap grew past 256 KB");
+    EXPECT_INT("local s for i=1,5000 do s='x'..i end return #s", 5);
+    if (p386_gc_bytes() > 256UL * 1024UL) FAIL("heap grew past 256 KB");
+    PASS();
+}
+
+TEST(gc_collects_cycles) {
+    EXPECT_INT("for i=1,10000 do local a,b={},{} a.b=b b.a=a a.self=a end return 1", 1);
+    if (p386_gc_bytes() > 256UL * 1024UL) FAIL("cycles were not collected");
+    PASS();
+}
+
+TEST(gc_keeps_live_data) {
+    /* Live data must survive many collections. */
+    EXPECT_INT(
+        "local keep={} for i=1,200 do keep[i]={v=i,s='k'..i} end\n"
+        "for i=1,20000 do local junk={i} end\n"
+        "local sum=0 for i=1,200 do sum+=keep[i].v\n"
+        "  if keep[i].s~='k'..i then return -1 end end\n"
+        "return sum", 20100);
+    PASS();
+}
+
+TEST(gc_stat0_reports_memory) {
+    EXPECT_INT("local t={} for i=1,100 do t[i]={} end return stat(0)>0 and 1 or 0", 1);
+    PASS();
+}
+
+/* Collect at every safe point and poison freed memory: a missing root
+ * gives a wrong result or a crash. */
+TEST(gc_stress_programs) {
+    static const struct { const char *code; int32_t want; } progs[] = {
+        /* closures with open and closed upvalues */
+        { "local function counter() local n=0 return function() n+=1 return n end end\n"
+          "local c1,c2=counter(),counter() for i=1,5 do c1() end c2()\n"
+          "return c1()*10+c2()", 62 },
+        /* strings: interned, freed, and interned again */
+        { "local t={} for i=1,50 do t[i]='s'..i end\n"
+          "local ok=0 for i=1,50 do if t[i]=='s'..i then ok+=1 end end return ok", 50 },
+        /* tables, nested, with string keys */
+        { "local root={kids={}} for i=1,40 do add(root.kids,{name='n'..i,v=i}) end\n"
+          "local s=0 for k in all(root.kids) do s+=k.v end return s", 820 },
+        /* metatables and metamethod frames */
+        { "local v={} v.__index=v\n"
+          "v.__add=function(a,b) return setmetatable({x=a.x+b.x},v) end\n"
+          "function v:len() return self.x end\n"
+          "local acc=setmetatable({x=0},v)\n"
+          "for i=1,30 do acc=acc+setmetatable({x=i},v) end return acc:len()", 465 },
+        /* varargs and pack/unpack */
+        { "local function f(...) local t=pack(...) return select('#',...)+t[1] end\n"
+          "local s=0 for i=1,20 do s+=f(i,'a','b') end return s", 270 },
+        /* foreach / pairs / del */
+        { "local t={} for i=1,30 do t['k'..i]=i end local s=0\n"
+          "for k,v in pairs(t) do s+=v end return s", 465 },
+        { "local t={} for i=1,30 do add(t,{i}) end\n"
+          "foreach(t,function(e) if e[1]%2==0 then del(t,e) end end)\n"
+          "return #t", 15 },
+        /* recursion: frames below the current one */
+        { "local function fib(n) if n<2 then return n end return fib(n-1)+fib(n-2) end\n"
+          "return fib(12)", 144 },
+        /* split / tostr results */
+        { "local p=split('1,2,3,4,5') local s=0 for x in all(p) do s+=x end\n"
+          "return s+#tostr(12345)", 20 },
+        /* backward fused branch (repeat-until): a safe point */
+        { "local t,i={},0 repeat i+=1 t[i]={v=i} until i>=40 and #t==40\n"
+          "local s=0 for e in all(t) do s+=e.v end return s", 820 },
+        { 0, 0 }
+    };
+    int i;
+    const char *err = 0;
+    p386_gc_stress = 1;
+    p386_gc_poison = 1;
+    p386_gc_bad_marks = 0;
+    for (i = 0; progs[i].code && !err; i++) err = expect_int(progs[i].code, progs[i].want);
+    p386_gc_stress = 0;
+    p386_gc_poison = 0;
+    if (err) {
+        static char msg[96];
+        sprintf(msg, "program %d: %s", i - 1, err);
+        FAIL(msg);
+    }
+    ASSERT_EQ(0, p386_gc_bad_marks);
+    PASS();
+}
+
+TEST(compile_constant_unary_and_concat_operands) {
+    /* The compiler passes constants as RK operands to these opcodes. */
+    EXPECT_INT("local n=7 local s='v='..n return #s", 3);
+    EXPECT_INT("return #('ab'..'cde')", 5);
+    EXPECT_INT("return #'hello'", 5);
+    EXPECT_INT("local a=not nil local b=not 1 return (a and 1 or 0)+(b and 0 or 2)", 3);
+    EXPECT_INT("poke(0x4300,42) poke(0x4301,1) return @0x4300 + $0x4300", 42 + 0x012a);
+    PASS();
+}
+
+TEST(gc_host_callbacks_keep_state) {
+    /* The host calls _update many times. State in globals and upvalues must
+     * survive the collections between calls; garbage must not pile up. */
+    const char *code =
+        "local count=0 objs={}\n"
+        "function _update() count+=1 add(objs,{n=count})\n"
+        "  if #objs>20 then del(objs,objs[1]) end\n"
+        "  local junk={} for i=1,50 do junk[i]='j'..i end score='s'..count end\n"
+        "function _draw() cls(0)\n"
+        "  if score=='s'..count and #objs==20 and objs[20].n==count then pset(0,0,7) end end";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    int i;
+
+    p8_ram_init();
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    for (i = 0; i < 2000; i++) {
+        ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_UPDATE, 0, 0));
+    }
+    if (p386_gc_bytes() > 256UL * 1024UL) FAIL("heap grew past 256 KB");
+    p386_gc_stress = 1;
+    p386_gc_poison = 1;
+    for (i = 0; i < 20; i++) {
+        ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_UPDATE, 0, 0));
+    }
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_DRAW, 0, 0));
+    p386_gc_stress = 0;
+    p386_gc_poison = 0;
+    ASSERT_EQ(0x07, p8_ram.mem.screen[0]);
+    p8_free_program(prog);
+    PASS();
+}
+
+/* ---- coroutines ------------------------------------------------------ */
+
+static const struct { const char *name; const char *code; int32_t want; } co_progs[] = {
+    { "generator",
+      "local co=cocreate(function() for i=1,3 do yield(i) end return 10 end)\n"
+      "local s=0 for k=1,4 do local ok,v=coresume(co) s+=v end\n"
+      "local ok,msg=coresume(co)\n"
+      "return s*10+(ok and 0 or 1)+(costatus(co)=='dead' and 2 or 0)+(type(msg)=='string' and 4 or 0)", 167 },
+    { "values both ways",
+      "local co=cocreate(function(a,b) local c=yield(a+b) local d,e=yield(c*2) return d+e end)\n"
+      "local _,x=coresume(co,1,2) local _,y=coresume(co,5) local _,z=coresume(co,7,8)\n"
+      "return x*100+y*10+z", 415 },
+    { "nested, normal status",
+      "local A,B\n"
+      "B=cocreate(function() yield(costatus(A)) end)\n"
+      "A=cocreate(function() local _,s=coresume(B) yield(s) end)\n"
+      "local _,s=coresume(A) return (s=='normal' and 1 or 0)+(costatus(A)=='suspended' and 2 or 0)", 3 },
+    { "running status, type",
+      "local co co=cocreate(function() yield(costatus(co)) end)\n"
+      "local _,s=coresume(co) return (s=='running' and 1 or 0)+(type(co)=='thread' and 2 or 0)", 3 },
+    { "error inside",
+      "local co=cocreate(function() local x=nil+1 end)\n"
+      "local ok,m=coresume(co)\n"
+      "return (ok and 0 or 1)+(type(m)=='string' and 2 or 0)+(costatus(co)=='dead' and 4 or 0)", 7 },
+    { "yield inside foreach",
+      "local co=cocreate(function() foreach({1,2,3},function(v) yield(v) end) end)\n"
+      "local s=0 for i=1,3 do local _,v=coresume(co) s+=v end return s", 6 },
+    { "yield inside __index",
+      "local t=setmetatable({},{__index=function(t,k) yield(k) return 5 end})\n"
+      "local co=cocreate(function() return t.x end)\n"
+      "local _,a=coresume(co) local _,b=coresume(co) return (a=='x' and 1 or 0)+b", 6 },
+    { "closure outlives coroutine",
+      "local f local co=cocreate(function() local n=5 f=function() n+=1 return n end\n"
+      "  yield() n+=10 end)\n"
+      "coresume(co) coresume(co) return f()", 16 },
+    { "yield and coresume in tail position",
+      "local co=cocreate(function() return yield(1) end)\n"
+      "local function g(...) return coresume(co,...) end\n"
+      "local _,a=g() local _,b=g(7) return a*10+b", 17 },
+    { "varargs body",
+      "local co=cocreate(function(...) local n=select('#',...) local a,b=... return n*100+a+b end)\n"
+      "local _,r=coresume(co,4,5,6) return r", 309 },
+    { "stack overflow is an error result",
+      "local co=cocreate(function() local function r(n) return 1+r(n+1) end r(1) end)\n"
+      "local ok=coresume(co) return (ok and 0 or 1)+(costatus(co)=='dead' and 2 or 0)", 3 },
+    { "resume self and running fail",
+      "local co co=cocreate(function() local ok=coresume(co) yield(ok) end)\n"
+      "local _,r=coresume(co) return r==false and 1 or 0", 1 },
+    { 0, 0, 0 }
+};
+
+static const char *run_co_progs(void) {
+    static char msg[128];
+    int i;
+    for (i = 0; co_progs[i].code; i++) {
+        const char *err = expect_int(co_progs[i].code, co_progs[i].want);
+        if (err) {
+            sprintf(msg, "%s: %s", co_progs[i].name, err);
+            return msg;
+        }
+    }
+    return 0;
+}
+
+TEST(co_programs) {
+    const char *err = run_co_progs();
+    if (err) FAIL(err);
+    PASS();
+}
+
+TEST(co_programs_gc_stress) {
+    const char *err;
+    p386_gc_stress = 1;
+    p386_gc_poison = 1;
+    p386_gc_bad_marks = 0;
+    err = run_co_progs();
+    p386_gc_stress = 0;
+    p386_gc_poison = 0;
+    if (err) FAIL(err);
+    ASSERT_EQ(0, p386_gc_bad_marks);
+    PASS();
+}
+
+TEST(co_yield_outside_coroutine_traps) {
+    P386VMState vm;
+    P386Value r;
+    if (!run_chunk("yield() return 1", &vm, &r)) FAIL("expected an error");
+    ASSERT_EQ(P386_VM_ERR_TYPE, vm.status);
+    PASS();
+}
+
+TEST(co_memory_stays_bounded) {
+    /* Finished coroutines free their stacks at once. Suspended coroutines
+     * that nothing refers to are collected. Without that, this is about
+     * 4000 * 7 KB = 28 MB. */
+    EXPECT_INT("for i=1,2000 do local co=cocreate(function() return i end) coresume(co) end\n"
+               "for i=1,2000 do local co=cocreate(function() yield() end) coresume(co) end\n"
+               "return 1", 1);
+    if (p386_gc_bytes() > 512UL * 1024UL) FAIL("heap grew past 512 KB");
+    PASS();
+}
+
+TEST(co_host_frames_wait_pattern) {
+    /* A cutscene coroutine that waits frames, resumed from _update. */
+    const char *code =
+        "log={} function wait(n) for i=1,n do yield() end end\n"
+        "function _init() cut=cocreate(function()\n"
+        "  add(log,'a') wait(3) add(log,'b') wait(2) add(log,'c') end) end\n"
+        "function _update() if costatus(cut)~='dead' then coresume(cut) end\n"
+        "  local junk={} for i=1,20 do junk[i]={i} end end\n"
+        "function _draw() cls(0)\n"
+        "  if #log==3 and log[1]..log[2]..log[3]=='abc' then pset(0,0,7) end end";
+    P8Program prog;
+    const unsigned char *bc;
+    unsigned long bc_len;
+    P386VMState vm;
+    int i;
+
+    p8_ram_init();
+    prog = p8_compile((const unsigned char *)code, strlen(code));
+    ASSERT_NOT_NULL(prog);
+    bc_len = p8_program_bytecode(prog, &bc);
+    ASSERT_TRUE(p386_vm_load(&vm, bc, bc_len));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_run(&vm));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_INIT, 0, 0));
+    p386_gc_stress = 1;
+    p386_gc_poison = 1;
+    for (i = 0; i < 5; i++) {
+        ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_UPDATE, 0, 0));
+    }
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_DRAW, 0, 0));
+    ASSERT_EQ(0x00, p8_ram.mem.screen[0]);      /* not done after 5 frames */
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_UPDATE, 0, 0));
+    ASSERT_EQ(P386_VM_HALTED, p386_vm_call_global(&vm, P386_GLOBAL_DRAW, 0, 0));
+    p386_gc_stress = 0;
+    p386_gc_poison = 0;
+    ASSERT_EQ(0x07, p8_ram.mem.screen[0]);      /* done in frame 6 */
+    p8_free_program(prog);
+    PASS();
+}
+
+TEST(builtin_error_keeps_its_message) {
+    P386VMState vm;
+    P386Value r;
+    if (!run_chunk("yield()", &vm, &r)) FAIL("expected an error");
+    ASSERT_TRUE(vm.error_msg && strcmp(vm.error_msg, "attempt to yield from outside a coroutine") == 0);
+    if (!run_chunk("setmetatable(1,{})", &vm, &r)) FAIL("expected an error");
+    ASSERT_TRUE(vm.error_msg && strcmp(vm.error_msg, "expected table") == 0);
+    PASS();
+}
+
+/* ---- fixes for real carts ------------------------------------------------ */
+
+TEST(cart_glyph_bytes_compile) {
+    /* Cart code holds glyphs as single bytes 0x80+ (not UTF-8). The button
+     * glyphs are the numbers 0-5. */
+    EXPECT_INT("return \x8b + \x91*10 + \x94*100 + \x83 + \x8e + \x97", 222);
+    EXPECT_INT("return #\"\x92\x87 \x8b\"", 4);          /* bytes stay bytes */
+    EXPECT_INT("local s=\"\x92\" return ord(s)", 0x92);
+    EXPECT_INT("-- \x8b\x91 comment\nreturn btn(\x8b) and 1 or 0", 0);
+    PASS();
+}
+
+TEST(cart_t_is_separate_from_time) {
+    EXPECT_INT("t=5 return flr(time())+t", 5);
+    EXPECT_INT("return t()==time() and 1 or 0", 1);
+    PASS();
+}
+
+TEST(cart_menuitem_and_cartdata) {
+    EXPECT_INT("menuitem(1,'restart',function() end) extcmd('reset')\n"
+               "local had=cartdata('test_cart_1')\n"
+               "dset(3,1.5) dset(63,-2) dset(64,9)\n"
+               "return (had and 0 or 100) + dget(3)*2 + dget(63) + dget(64)", 101);
+    EXPECT_INT("dset(0,0x1234.5678) return peek4(0x5e00)==0x1234.5678 and 1 or 0", 1);
+    PASS();
+}
+
+/* ---- intrinsics (FLR/CEIL/ABS/SGN/MIN/MAX) ------------------------------ */
+
+TEST(intrinsics_match_builtins) {
+    /* A local alias keeps the builtin as a CALL; the plain name becomes an
+     * opcode. Both must agree for every value, edge cases included. */
+    EXPECT_INT(
+        "local v={0,1,-1,2.5,-2.5,0.0001,-0.0001,32767.99,-32768,-32767.5,100,'x',true}\n"
+        "local f,c,a,s,mn,mx=flr,ceil,abs,sgn,min,max local bad=0\n"
+        "for i=1,#v do local x=v[i]\n"
+        "  if flr(x)~=f(x) then bad+=1 end if ceil(x)~=c(x) then bad+=1 end\n"
+        "  if abs(x)~=a(x) then bad+=1 end if sgn(x)~=s(x) then bad+=1 end\n"
+        "  for j=1,#v do local y=v[j]\n"
+        "    if min(x,y)~=mn(x,y) then bad+=1 end if max(x,y)~=mx(x,y) then bad+=1 end\n"
+        "  end end return bad", 0);
+    EXPECT_INT("return flr(-2.5)*100 + ceil(-2.5)*10 + sgn(0)", -319);
+    /* abs(-32768) saturates to 0x7fffffff (the largest number). */
+    EXPECT_INT("return abs(-32768) == 0x7fff.ffff and 1 or 0", 1);
+    PASS();
+}
+
+TEST(intrinsics_respect_redefinition) {
+    /* The cart defines its own abs: every call must use it, also the calls
+     * compiled before the definition. */
+    EXPECT_INT("local function g() return abs(-1) end\n"
+               "function abs(x) return 42 end return g()+abs(5)", 84);
+    EXPECT_INT("min=function(a,b) return 7 end return min(1,2)", 7);
+    EXPECT_INT("local function max(a,b) return 9 end return max(1,2)", 9);
+    /* Other names stay intrinsics and still work. */
+    EXPECT_INT("function abs(x) return 0 end return flr(3.7)", 3);
+    PASS();
+}
+
+/* ---- tables: array part + hash part -------------------------------------- */
+
+static const struct { const char *name; const char *code; int32_t want; } table_progs[] = {
+    { "many string keys",
+      "local t={} for i=1,500 do t['k'..i]=i end local ok=0\n"
+      "for i=1,500 do if t['k'..i]==i then ok+=1 end end return ok", 500 },
+    { "keys of every type",
+      "local t,f,g={},{},function() end\n"
+      "t[f]=1 t[g]=2 t[true]=3 t[false]=4 t[0.5]=5 t[-3]=6 t['x']=7 t[0]=8 t[cos]=9\n"
+      "return t[f]+t[g]+t[true]+t[false]+t[0.5]+t[-3]+t.x+t[0]+t[cos]", 45 },
+    { "out of order integer keys move to the array",
+      "local t={} t[3]='c' t[2]='b' t[5]='e' t[1]='a' t[4]='d'\n"
+      "return #t*10 + #(t[1]..t[2]..t[3]..t[4]..t[5])", 55 },
+    { "holes and #t",
+      "local t={1,2,3,4,5} t[3]=nil local a=#t t[5]=nil local b=#t t[4]=nil local c=#t\n"
+      "return a*100+b*10+c", 542 },
+    { "add/del keep #t",
+      "local t={} for i=1,50 do add(t,i) end for i=1,25 do del(t,i*2) end\n"
+      "local s=0 for v in all(t) do s+=v end return #t*1000+s/25", 25025 },
+    { "pairs visits every key once",
+      "local t={10,20,30} for i=1,100 do t['k'..i]=i end t[200]=1\n"
+      "local n,s=0,0 for k,v in pairs(t) do n+=1 s+=v end return n*100+s-5100", 10411 },
+    { "clear fields during pairs",
+      "local t={} for i=1,200 do t['k'..i]=i end\n"
+      "local n=0 for k,v in pairs(t) do n+=1 t[k]=nil end\n"
+      "local left=0 for k in pairs(t) do left+=1 end return n*10+left", 2000 },
+    { "reinsert after delete",
+      "local t={} for r=1,20 do for i=1,50 do t['k'..i]=i end for i=1,50 do t['k'..i]=nil end end\n"
+      "t.z=5 local n=0 for k in pairs(t) do n+=1 end return n*10+t.z", 15 },
+    { "array grows past the hint",
+      "local t={1,2,3} for i=4,300 do t[i]=i end\n"
+      "local ok=0 for i=1,#t do if t[i]==i then ok+=1 end end return #t+ok", 600 },
+    { 0, 0, 0 }
+};
+
+static const char *run_table_progs(void) {
+    static char msg[128];
+    int i;
+    for (i = 0; table_progs[i].code; i++) {
+        const char *err = expect_int(table_progs[i].code, table_progs[i].want);
+        if (err) {
+            sprintf(msg, "%s: %s", table_progs[i].name, err);
+            return msg;
+        }
+    }
+    return 0;
+}
+
+TEST(table_programs) {
+    const char *err = run_table_progs();
+    if (err) FAIL(err);
+    PASS();
+}
+
+TEST(table_programs_gc_stress) {
+    /* Collections during pairs turn cleared slots into dead keys. */
+    const char *err;
+    p386_gc_stress = 1;
+    p386_gc_poison = 1;
+    p386_gc_bad_marks = 0;
+    err = run_table_progs();
+    p386_gc_stress = 0;
+    p386_gc_poison = 0;
+    if (err) FAIL(err);
+    ASSERT_EQ(0, p386_gc_bad_marks);
+    PASS();
+}
+
+TEST(gc_scans_caller_registers_above_callee_frame) {
+    /* The call to wide() leaves stale tables in high temporary registers of
+     * f. small() then runs in a frame that starts at a low register and
+     * ends below them. Collections inside small() must still scan f's
+     * upper registers: f's own frame covers them again after the return. */
+    const char *err;
+    p386_gc_stress = 1;
+    p386_gc_poison = 1;
+    p386_gc_bad_marks = 0;
+    err = expect_int(
+        "local function wide(...) return select('#',...) end\n"
+        "local function small() local t={} return 1 end\n"
+        "local function f()\n"
+        "  local n=wide({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})\n"
+        "  for i=1,20 do n+=small() end\n"
+        "  local m=wide({1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12})\n"
+        "  return n+m end\n"
+        "return f()", 48);
+    p386_gc_stress = 0;
+    p386_gc_poison = 0;
+    if (err) FAIL(err);
+    ASSERT_EQ(0, p386_gc_bad_marks);
+    PASS();
+}
+
+TEST(call_args_in_place) {
+    /* Callee frames start at their first argument: missing arguments are
+     * nil, extra ones are dropped (or kept as varargs), and the callee's
+     * locals start as nil even where the caller had values. */
+    EXPECT_INT("local function f(a,b,c) local d return (c==nil and 1 or 0)+(d==nil and 2 or 0)+a+b end\n"
+               "local x,y,z,w=10,20,30,40 return f(1,2)+f(1,2,nil,99)", 12);
+    EXPECT_INT("local function g(a,...) local n=select('#',...) local p,q=... return a+n*10+p+q end\n"
+               "return g(1,2,3)", 26);
+    EXPECT_INT("local function r(n) if n==0 then return 0 end return n+r(n-1) end return r(50)", 1275);
+    EXPECT_INT("local function m() return 1,2,3 end local a,b,c,d=m() return a+b*10+c*100+(d==nil and 1000 or 0)", 1321);
     PASS();
 }

@@ -18,6 +18,8 @@ C_SRC	= 	src/main.c 					\
 			src/p386_loader.c			\
 			src/p386_obj.c				\
 			src/p386_meta.c				\
+			src/p386_gc.c				\
+			src/p386_co.c				\
 			src/p386_builtins.c		\
 			src/mem.c 					\
 			src/print.c					\
@@ -43,6 +45,8 @@ LIB_OBJS = 	src/pico386.obj				\
 			src/p386_loader.obj			\
 			src/p386_obj.obj			\
 			src/p386_meta.obj			\
+			src/p386_gc.obj				\
+			src/p386_co.obj				\
 			src/p386_builtins.obj		\
 			src/mem.obj				\
 			src/input.obj				\
@@ -115,6 +119,8 @@ $(RUST_AR): FORCE
 $(RUST_OBJS_DIR): $(RUST_AR)
 	rm -rf $(RUST_OBJS_DIR) && mkdir -p $(RUST_OBJS_DIR)
 	cd $(RUST_OBJS_DIR) && ar x ../../$(RUST_AR)
+	@echo "Removing embedded LLVM bitcode (wlink copies it into the EXE as data)..."
+	for o in $(RUST_OBJS_DIR)/*.o; do objcopy --remove-section=.llvmbc --remove-section=.llvmcmd $$o || exit 1; done
 	@echo "Pruning unreferenced Rust/core/alloc objects (keep EXE small)..."
 	@python3 script/resolve_rust_objs.py --prune $(RUST_OBJS_DIR)
 	@echo "Patching ELF R_386_PLT32 -> R_386_PC32 for wlink compatibility..."
@@ -153,14 +159,31 @@ pico: wstub.exe dos $(OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
 test: wstub.exe dos $(TEST_OBJ) $(LIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
 	$(LD) system dos4g $(LDOPTS) file $(TEST_OBJ) $(foreach obj,$(LIB_OBJS),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(TEST_OUT)
 
-vm-test: wstub.exe dos $(VM_TEST_OBJ) src/p386_loader.obj src/p386_obj.obj src/p386_meta.obj src/p386_builtins.obj src/input.obj src/gfx.obj src/mem.obj src/p386_dispatch.obj src/serial.obj src/print.obj
-	$(LD) system dos4g $(LDOPTS) file $(VM_TEST_OBJ) file src/p386_loader.obj file src/p386_obj.obj file src/p386_meta.obj file src/p386_builtins.obj file src/input.obj file src/gfx.obj file src/mem.obj file src/p386_dispatch.obj file src/serial.obj file src/print.obj name $(VM_TEST_OUT)
+vm-test: wstub.exe dos $(VM_TEST_OBJ) src/p386_loader.obj src/p386_obj.obj src/p386_meta.obj src/p386_gc.obj src/p386_co.obj src/p386_builtins.obj src/input.obj src/gfx.obj src/mem.obj src/p386_dispatch.obj src/serial.obj src/print.obj
+	$(LD) system dos4g $(LDOPTS) file $(VM_TEST_OBJ) file src/p386_loader.obj file src/p386_obj.obj file src/p386_meta.obj file src/p386_gc.obj file src/p386_co.obj file src/p386_builtins.obj file src/input.obj file src/gfx.obj file src/mem.obj file src/p386_dispatch.obj file src/serial.obj file src/print.obj name $(VM_TEST_OUT)
 
 # Drawing benchmark — QEMU only (uses rdtsc; see test/bench_gfx_main.c)
 BENCH_OBJ	= test/bench_gfx_main.obj
 BENCH_OUT	= dos/BENCH.EXE
 bench: wstub.exe dos $(BENCH_OBJ) src/gfx.obj src/mem.obj src/vga.obj src/vga_page.obj src/timer.obj src/serial.obj src/print.obj
 	$(LD) system dos4g $(LDOPTS) file $(BENCH_OBJ) file src/gfx.obj file src/mem.obj file src/vga.obj file src/vga_page.obj file src/timer.obj file src/serial.obj file src/print.obj name $(BENCH_OUT)
+
+# Profiling build — QEMU -icount only (see P386_PROF in src/main.c).
+# MAIN.EXE with per-phase instruction counts: ./test.sh prof
+PROF_OUT	= dos/PROF.EXE
+PROF_OBJS	= src/main_prof.obj src/p386_dispatch_prof.obj
+src/main_prof.obj: src/main.c $(ZLIB_DIR)/zconf.h include/p386_layout.h include/builtins.h
+	$(CC) $(CFLAGS) -dP386_PROF -fo=$@ $<
+src/p386_dispatch_prof.obj: src/p386_dispatch.asm src/p386_layout.inc
+	$(ASM) $(AFLAGS) -DPROFILE -o $@ $<
+src/p386_dispatch_profops.obj: src/p386_dispatch.asm src/p386_layout.inc
+	$(ASM) $(AFLAGS) -DPROFILE -DPROFILE_OPS -o $@ $<
+# Like PROF.EXE, plus instructions per opcode (adds a fixed cost per opcode).
+profops: wstub.exe dos src/main_prof.obj src/p386_dispatch_profops.obj $(filter-out src/main.obj src/p386_dispatch.obj,$(OBJS)) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
+	$(LD) system dos4g $(LDOPTS) $(foreach obj,src/main_prof.obj src/p386_dispatch_profops.obj $(filter-out src/main.obj src/p386_dispatch.obj,$(OBJS)),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name dos/PROFOPS.EXE
+
+prof: wstub.exe dos $(PROF_OBJS) $(filter-out src/main.obj src/p386_dispatch.obj,$(OBJS)) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM)
+	$(LD) system dos4g $(LDOPTS) $(foreach obj,$(PROF_OBJS) $(filter-out src/main.obj src/p386_dispatch.obj,$(OBJS)),file $(obj)) file $(CRT_SHIM) $(foreach obj,$(wildcard $(RUST_OBJS_DIR)/*.o),file $(obj)) library $(ZLIB_LIB) name $(PROF_OUT)
 
 # VGA test binary — needs VGA + serial, minimal deps
 vga-test: wstub.exe dos $(VGA_TEST_OBJ) src/vga.obj src/vga_page.obj src/timer.obj src/serial.obj src/print.obj
@@ -189,8 +212,12 @@ $(ZLIB_DIR)/%.obj: $(ZLIB_DIR)/%.c $(ZLIB_DIR)/zconf.h
 	$(CC) -bt=dos -3s -ecc -od -fo=$@ $<
 
 clean:
-	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM) $(TEST_OBJ) $(VM_TEST_OBJ) $(VGA_TEST_OBJ) $(BENCH_OBJ) dos/*.exe *.err
+	rm -rf $(OBJS) $(ZLIB_OBJS) $(ZLIB_LIB) $(RUST_OBJS_DIR) $(CRT_SHIM) $(TEST_OBJ) $(VM_TEST_OBJ) $(VGA_TEST_OBJ) $(BENCH_OBJ) $(PROF_OBJS) src/p386_dispatch_profops.obj dos/*.exe *.err
 	cd rust && cargo clean
 
 FORCE:
-.PHONY: all clean pico test vm-test vga-test bench layout-check FORCE
+.PHONY: all clean pico test vm-test vga-test bench prof profops layout-check FORCE
+
+# Builtins: expand the small argument helpers (arg_fp, ret_num, ...) inline.
+# Each one is a function call per argument otherwise.
+src/p386_builtins.obj: CFLAGS += -oe=100

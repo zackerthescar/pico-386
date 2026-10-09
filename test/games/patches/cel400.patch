@@ -1,0 +1,9 @@
+Celeste Classic: start the game at 400m (room 3,0), the screen with
+12 fall floors. It has the most Lua work per frame of the early rooms.
+<<<
+	music(0,0,7)
+	load_room(0,0)
+===
+	music(0,0,7)
+	load_room(3,0)
+>>>

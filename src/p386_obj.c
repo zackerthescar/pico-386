@@ -2,12 +2,13 @@
  * pico386 VM heap objects: strings, tables, intern table.
  *
  * Pure C; no asm, no DOS calls. Designed to be host-testable.
- * Allocation: malloc, never free (see TODO_GC.md).
+ * Allocation: p386_gc_alloc; the collector in p386_gc.c frees objects.
  */
 
 #include <stdlib.h>
 #include <string.h>
 #include "p386_obj.h"
+#include "p386_gc.h"
 
 /* ---------- intern table -------------------------------------------- */
 
@@ -52,8 +53,44 @@ static int intern_grow(void) {
     return 1;
 }
 
+/* Drop the intern table (p386_gc_reset frees the strings). */
+void p386_string_intern_reset(void) {
+    free(g_intern);
+    g_intern = 0;
+    g_intern_cap = 0;
+    g_intern_n = 0;
+}
+
+/* Called by the collector after marking: remove unmarked strings. The
+ * table uses linear probing, so it is rebuilt instead of punching holes. */
+void p386_string_intern_sweep(void) {
+    uint32_t i, n = 0, mask = g_intern_cap - 1;
+    InternBucket *nb;
+    if (!g_intern) return;
+    nb = (InternBucket *)calloc(g_intern_cap, sizeof(InternBucket));
+    if (!nb) {
+        /* No memory for a new table: keep every string alive instead. */
+        for (i = 0; i < g_intern_cap; i++) {
+            if (g_intern[i].s) P386_GC_HDR(g_intern[i].s)->marked = 1;
+        }
+        return;
+    }
+    for (i = 0; i < g_intern_cap; i++) {
+        P386String *e = g_intern[i].s;
+        uint32_t j;
+        if (!e || !P386_GC_HDR(e)->marked) continue;
+        j = e->hash & mask;
+        while (nb[j].s) j = (j + 1) & mask;
+        nb[j].s = e;
+        n++;
+    }
+    free(g_intern);
+    g_intern = nb;
+    g_intern_n = n;
+}
+
 static P386String *string_alloc(const char *data, uint32_t len, uint32_t hash) {
-    P386String *s = (P386String *)malloc(sizeof(P386String) + len);
+    P386String *s = (P386String *)p386_gc_alloc(P386_GC_STR, (uint32_t)sizeof(P386String) + len);
     if (!s) return 0;
     s->len = len;
     s->hash = hash;
@@ -86,6 +123,7 @@ P386String *p386_string_intern(const char *data, uint32_t len) {
     }
     s = string_alloc(data, len, hash);
     if (!s) return 0;
+    P386_GC_HDR(s)->flags |= P386_GC_INTERNED;
     g_intern[i].s = s;
     g_intern_n++;
     return s;
@@ -190,136 +228,273 @@ P386String *p386_value_concat(const P386Value *a, const P386Value *b) {
 }
 
 /* ---------- table --------------------------------------------------- */
+/*
+ * A table has two parts, as in Lua:
+ *   - array part: t[1..asize] in arr[0..asize-1]. arr[asize-1] is never nil
+ *     (setting the last element to nil trims asize), so #t is asize.
+ *     Elements inside can be nil (holes).
+ *   - hash part: open addressing with linear probing, hcap slots (a power of
+ *     two, or 0 when there is none). An empty slot has key tag NIL.
+ *
+ * t[k] = nil for a key in the hash part keeps the key with a nil value, so
+ * next() still finds that key while pairs() runs (Lua allows clearing
+ * fields during a traversal). Such slots count as used until a rehash. The
+ * collector turns them into DEAD_KEY slots: the key is no longer a
+ * reference, but its bits stay for identity (see p386_table_traverse).
+ */
 
-#define TABLE_INIT_CAP 4
+#define DEAD_KEY 0xFFu              /* key tag of a dead slot (tables only) */
+#define HASH_MIN 4
 
-static int value_eq(const P386Value *a, const P386Value *b) {
-    if (a->tag != b->tag) return 0;
-    if (a->tag == P386_TAG_STR) {
-        /* with interning, pointer compare is sufficient, but be safe. */
-        return p386_string_eq((const P386String *)(uintptr_t)a->value,
-                              (const P386String *)(uintptr_t)b->value);
-    }
-    return a->value == b->value;
-}
-
-P386Table *p386_table_new(uint32_t array_hint, uint32_t hash_hint) {
-    P386Table *t = (P386Table *)malloc(sizeof(P386Table));
-    uint32_t cap;
-    (void)hash_hint;
-    if (!t) return 0;
-    cap = array_hint ? array_hint : TABLE_INIT_CAP;
-    if (cap < TABLE_INIT_CAP) cap = TABLE_INIT_CAP;
-    t->entries = (P386TableEntry *)calloc(cap, sizeof(P386TableEntry));
-    if (!t->entries) { free(t); return 0; }
-    t->cap = cap;
-    t->len = 0;
-    t->array_len = 0;
-    t->metatable = 0;
-    return t;
-}
-
-static int table_grow(P386Table *t) {
-    uint32_t new_cap = t->cap * 2;
-    P386TableEntry *ne = (P386TableEntry *)realloc(t->entries,
-                                                   new_cap * sizeof(P386TableEntry));
-    if (!ne) return 0;
-    memset(ne + t->cap, 0, (new_cap - t->cap) * sizeof(P386TableEntry));
-    t->entries = ne;
-    t->cap = new_cap;
+static int is_array_key(const P386Value *k, uint32_t *idx) {
+    if (k->tag != P386_TAG_NUM || (k->value & 0xffff) || k->value <= 0) return 0;
+    *idx = (uint32_t)(k->value >> 16) - 1u;     /* 0-based */
     return 1;
 }
 
-static int find_entry(const P386Table *t, const P386Value *key) {
-    uint32_t i;
-    for (i = 0; i < t->len; i++) {
-        if (t->entries[i].key.tag == P386_TAG_NIL) continue;
-        if (value_eq(&t->entries[i].key, key)) return (int)i;
+static uint32_t key_hash(const P386Value *k) {
+    uint32_t h;
+    if (k->tag == P386_TAG_STR) return ((const P386String *)(uintptr_t)k->value)->hash;
+    h = (uint32_t)k->value ^ (k->tag * 0x9e3779b9u);
+    h ^= h >> 15;
+    h *= 0x2c1b3c6du;
+    h ^= h >> 12;
+    return h;
+}
+
+static int key_eq(const P386Value *a, const P386Value *b) {
+    if (a->tag != b->tag) return 0;
+    if (a->value == b->value) return 1;
+    /* Strings are interned, so equal strings have one pointer. Only a
+     * string made without the intern table (out of memory) needs this. */
+    return a->tag == P386_TAG_STR &&
+           p386_string_eq((const P386String *)(uintptr_t)a->value,
+                          (const P386String *)(uintptr_t)b->value);
+}
+
+/* Hash slot of key, or NULL. dead_ok also matches a DEAD_KEY slot with the
+ * same key bits (for next() after a collection). */
+static P386TableEntry *hash_find(const P386Table *t, const P386Value *key, int dead_ok) {
+    uint32_t mask, i;
+    if (!t->hcap) return 0;
+    mask = t->hcap - 1;
+    i = key_hash(key) & mask;
+    for (;;) {
+        P386TableEntry *e = &t->hash[i];
+        if (e->key.tag == P386_TAG_NIL) return 0;
+        if (key_eq(&e->key, key)) return e;
+        if (dead_ok && e->key.tag == DEAD_KEY && e->key.value == key->value) return e;
+        i = (i + 1) & mask;
     }
-    return -1;
+}
+
+/* Put a key that is not in the table into a free slot (no resize). */
+static P386TableEntry *hash_insert_new(P386Table *t, const P386Value *key) {
+    uint32_t mask = t->hcap - 1, i = key_hash(key) & mask;
+    while (t->hash[i].key.tag != P386_TAG_NIL && t->hash[i].key.tag != DEAD_KEY) {
+        i = (i + 1) & mask;
+    }
+    if (t->hash[i].key.tag == P386_TAG_NIL) t->hused++;
+    t->hash[i].key = *key;
+    return &t->hash[i];
+}
+
+/* Rebuild the hash part for its live entries (drops nil and dead slots). */
+static int hash_resize(P386Table *t, uint32_t live_extra) {
+    P386TableEntry *old = t->hash;
+    uint32_t old_cap = t->hcap, live = 0, cap = HASH_MIN, i;
+    for (i = 0; i < old_cap; i++) {
+        if (old[i].key.tag != P386_TAG_NIL && old[i].key.tag != DEAD_KEY &&
+            old[i].val.tag != P386_TAG_NIL) live++;
+    }
+    live += live_extra;
+    while (cap * 3 < live * 4 + 4) cap *= 2;      /* load factor < 3/4 */
+    t->hash = (P386TableEntry *)calloc(cap, sizeof(P386TableEntry));
+    if (!t->hash) {
+        t->hash = old;
+        return 0;
+    }
+    t->hcap = cap;
+    t->hused = 0;
+    for (i = 0; i < old_cap; i++) {
+        if (old[i].key.tag != P386_TAG_NIL && old[i].key.tag != DEAD_KEY &&
+            old[i].val.tag != P386_TAG_NIL) {
+            hash_insert_new(t, &old[i].key)->val = old[i].val;
+        }
+    }
+    free(old);
+    p386_gc_account((int32_t)((cap - old_cap) * sizeof(P386TableEntry)));
+    return 1;
+}
+
+static int array_reserve(P386Table *t, uint32_t n) {
+    uint32_t cap = t->acap ? t->acap : 4;
+    P386Value *na;
+    if (n <= t->acap) return 1;
+    while (cap < n) cap *= 2;
+    na = (P386Value *)realloc(t->arr, cap * sizeof(P386Value));
+    if (!na) return 0;
+    p386_gc_account((int32_t)((cap - t->acap) * sizeof(P386Value)));
+    t->arr = na;
+    t->acap = cap;
+    return 1;
+}
+
+/* t[asize+1] = v (v not nil). Then move asize+1, asize+2, ... from the hash
+ * part into the array part while they exist. */
+static void array_append(P386Table *t, const P386Value *v) {
+    P386Value k;
+    P386TableEntry *e;
+    if (!array_reserve(t, t->asize + 1)) return;
+    t->arr[t->asize++] = *v;
+    k.tag = P386_TAG_NUM;
+    for (;;) {
+        k.value = (int32_t)((t->asize + 1) << 16);
+        e = hash_find(t, &k, 0);
+        if (!e || e->val.tag == P386_TAG_NIL) break;
+        if (!array_reserve(t, t->asize + 1)) break;
+        t->arr[t->asize++] = e->val;
+        e->val.value = 0;
+        e->val.tag = P386_TAG_NIL;
+    }
+}
+
+P386Table *p386_table_new(uint32_t array_hint, uint32_t hash_hint) {
+    /* Zeroed: no parts. A failed part allocation leaves a valid table. */
+    P386Table *t = (P386Table *)p386_gc_alloc(P386_GC_TAB, (uint32_t)sizeof(P386Table));
+    if (!t) return 0;
+    if (array_hint) array_reserve(t, array_hint);
+    if (hash_hint) hash_resize(t, hash_hint);
+    return t;
 }
 
 void p386_table_get(const P386Table *t, const P386Value *key, P386Value *out) {
-    int idx;
+    uint32_t idx;
+    const P386TableEntry *e;
     out->value = 0;
     out->tag = P386_TAG_NIL;
-    if (!t || key->tag == P386_TAG_NIL) return;
-    idx = find_entry(t, key);
-    if (idx >= 0) *out = t->entries[idx].val;
-}
-
-static void recompute_array_len(P386Table *t) {
-    uint32_t n = 0;
-    for (;;) {
-        P386Value k;
-        int idx;
-        k.tag = P386_TAG_NUM;
-        k.value = (int32_t)((n + 1) << 16);
-        idx = find_entry(t, &k);
-        if (idx < 0 || t->entries[idx].val.tag == P386_TAG_NIL) break;
-        n++;
+    if (!t) return;
+    if (is_array_key(key, &idx) && idx < t->asize) {
+        *out = t->arr[idx];
+        return;
     }
-    t->array_len = n;
+    e = hash_find(t, key, 0);
+    if (e) *out = e->val;
 }
 
 void p386_table_set(P386Table *t, const P386Value *key, const P386Value *val) {
-    int idx;
+    uint32_t idx;
+    P386TableEntry *e;
     if (!t || key->tag == P386_TAG_NIL) return;
-    idx = find_entry(t, key);
-    if (idx >= 0) {
-        if (val->tag == P386_TAG_NIL) {
-            /* tombstone */
-            t->entries[idx].key.tag = P386_TAG_NIL;
-            t->entries[idx].val.tag = P386_TAG_NIL;
-        } else {
-            t->entries[idx].val = *val;
+    if (is_array_key(key, &idx)) {
+        if (idx < t->asize) {
+            t->arr[idx] = *val;
+            if (val->tag == P386_TAG_NIL && idx + 1 == t->asize) {
+                while (t->asize && t->arr[t->asize - 1].tag == P386_TAG_NIL) t->asize--;
+            }
+            return;
         }
-    } else {
-        if (val->tag == P386_TAG_NIL) return;
-        if (t->len == t->cap && !table_grow(t)) return;
-        t->entries[t->len].key = *key;
-        t->entries[t->len].val = *val;
-        t->len++;
-    }
-    /* maintain array_len for integer keys (16.16 representation of 1,2,3...) */
-    if (key->tag == P386_TAG_NUM && (((uint32_t)key->value & 0xffffu) == 0)) {
-        int32_t k = key->value >> 16;
-        if (k >= 1 && (uint32_t)k <= t->array_len + 1) {
-            recompute_array_len(t);
-        } else if (k >= 1 && val->tag == P386_TAG_NIL) {
-            recompute_array_len(t);
+        if (idx == t->asize) {
+            if (val->tag != P386_TAG_NIL) {
+                /* The key can be in the hash part (set when it was not
+                 * next): clear it there first. */
+                e = hash_find(t, key, 0);
+                if (e) e->val.tag = P386_TAG_NIL, e->val.value = 0;
+                array_append(t, val);
+            }
+            return;
         }
     }
+    e = hash_find(t, key, 0);
+    if (e) {
+        e->val = *val;
+        return;
+    }
+    if (val->tag == P386_TAG_NIL) return;
+    if ((t->hused + 1) * 4 > t->hcap * 3 && !hash_resize(t, 1)) return;
+    hash_insert_new(t, key)->val = *val;
 }
 
 uint32_t p386_table_len(const P386Table *t) {
-    if (!t) return 0;
-    return t->array_len;
+    return t ? t->asize : 0;
 }
 
 int p386_table_next(const P386Table *t, const P386Value *key,
                     P386Value *out_key, P386Value *out_val) {
-    uint32_t i = 0;
+    uint32_t i = 0, idx;
     out_key->value = 0;
     out_key->tag = P386_TAG_NIL;
     out_val->value = 0;
     out_val->tag = P386_TAG_NIL;
     if (!t) return 0;
 
+    /* Position after key: array index, then hash slot. */
     if (key->tag != P386_TAG_NIL) {
-        int idx = find_entry(t, key);
-        if (idx < 0) return 0;
-        i = (uint32_t)idx + 1;
+        if (is_array_key(key, &idx) && idx < t->asize) {
+            i = idx + 1;
+        } else {
+            const P386TableEntry *e = hash_find(t, key, 1);
+            if (e) {
+                i = t->asize + (uint32_t)(e - t->hash) + 1;
+            } else if (is_array_key(key, &idx) && idx < t->acap) {
+                i = t->asize;       /* the array part was trimmed past it */
+            } else {
+                return 0;           /* unknown key */
+            }
+        }
     }
-
-    for (; i < t->len; i++) {
-        if (t->entries[i].key.tag == P386_TAG_NIL) continue;
-        if (t->entries[i].val.tag == P386_TAG_NIL) continue;
-        *out_key = t->entries[i].key;
-        *out_val = t->entries[i].val;
+    for (; i < t->asize; i++) {
+        if (t->arr[i].tag == P386_TAG_NIL) continue;
+        out_key->tag = P386_TAG_NUM;
+        out_key->value = (int32_t)((i + 1) << 16);
+        *out_val = t->arr[i];
+        return 1;
+    }
+    for (i -= t->asize; i < t->hcap; i++) {
+        const P386TableEntry *e = &t->hash[i];
+        if (e->key.tag == P386_TAG_NIL || e->key.tag == DEAD_KEY) continue;
+        if (e->val.tag == P386_TAG_NIL) continue;
+        *out_key = e->key;
+        *out_val = e->val;
         return 1;
     }
     return 0;
+}
+
+/* Collector: mark the contents. Slots with a nil value become DEAD_KEY:
+ * the key is not marked (it may be freed), and lookups never compare
+ * through it; next() still matches its bits. */
+void p386_table_traverse(P386Table *t) {
+    uint32_t i;
+    for (i = 0; i < t->asize; i++) p386_gc_mark_value(&t->arr[i]);
+    for (i = 0; i < t->hcap; i++) {
+        P386TableEntry *e = &t->hash[i];
+        if (e->key.tag == P386_TAG_NIL || e->key.tag == DEAD_KEY) continue;
+        if (e->val.tag == P386_TAG_NIL) {
+            e->key.tag = DEAD_KEY;
+            continue;
+        }
+        p386_gc_mark_value(&e->key);
+        p386_gc_mark_value(&e->val);
+    }
+    p386_gc_mark_object(t->metatable);
+}
+
+/* Collector: free the parts of a table. Returns the bytes they used. */
+uint32_t p386_table_free_parts(P386Table *t, int poison) {
+    uint32_t abytes = t->acap * (uint32_t)sizeof(P386Value);
+    uint32_t hbytes = t->hcap * (uint32_t)sizeof(P386TableEntry);
+    if (t->arr) {
+        if (poison) memset(t->arr, 0xDD, abytes);
+        free(t->arr);
+    }
+    if (t->hash) {
+        if (poison) memset(t->hash, 0xDD, hbytes);
+        free(t->hash);
+    }
+    t->arr = 0;
+    t->hash = 0;
+    return abytes + hbytes;
 }
 
 P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto,
@@ -329,7 +504,7 @@ P386Closure *p386_closure_new(uint32_t proto_index, const P386ProtoEntry *proto,
     if (n_upvalues > 0) {
         bytes += ((size_t)n_upvalues - 1U) * sizeof(P386Upvalue *);
     }
-    c = (P386Closure *)calloc(1, bytes);
+    c = (P386Closure *)p386_gc_alloc(P386_GC_CLOSURE, (uint32_t)bytes);
     if (!c) return 0;
     c->proto_index = proto_index;
     c->proto = proto;
@@ -345,7 +520,7 @@ P386Upvalue *p386_upvalue_find_or_add(P386Upvalue **head, P386Value *slot) {
         if (uv->slot == slot) return uv;
         uv = uv->next_open;
     }
-    uv = (P386Upvalue *)malloc(sizeof(P386Upvalue));
+    uv = (P386Upvalue *)p386_gc_alloc(P386_GC_UPVAL, (uint32_t)sizeof(P386Upvalue));
     if (!uv) return 0;
     uv->slot = slot;
     uv->closed.value = 0;

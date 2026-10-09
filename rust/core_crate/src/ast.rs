@@ -365,7 +365,19 @@ fn hex_val(c: u8) -> u8 {
 // ── String literal parsing ───────────────────────────────────────────
 
 pub fn parse_string_literal(raw: &str) -> Vec<u8> {
-    let b = raw.as_bytes();
+    // A char up to U+00FF is one PICO-8 byte (cart code is decoded as
+    // Latin-1, see p8_compile). Other chars (UTF-8 .p8 text) keep their
+    // UTF-8 bytes.
+    let mut owned = Vec::with_capacity(raw.len());
+    for c in raw.chars() {
+        if (c as u32) <= 0xff {
+            owned.push(c as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            owned.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+    let b = &owned[..];
     if b.len() < 2 { return Vec::new(); }
 
     // Long string [[...]]

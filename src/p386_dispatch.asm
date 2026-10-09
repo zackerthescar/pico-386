@@ -35,6 +35,77 @@ extern _p386_meta_has_len
 extern _p386_meta_call_value
 extern _p386_meta_call
 extern _p386_meta_nargs
+extern _p386_gc_pending
+extern _p386_gc_safepoint
+
+; Call the CFUNC in ebx. The profiling build (nasm -DPROFILE, PROF.EXE)
+; adds the instructions spent in builtins to p386_prof_cfunc (QEMU -icount
+; makes the TSC count instructions). The normal build is a plain call.
+%ifdef PROFILE
+extern _p386_prof_cfunc
+extern _p386_prof_table
+extern _p386_prof_string
+extern _p386_prof_ops
+%endif
+%ifdef PROFILE_OPS
+extern _p386_prof_op_cost
+extern _p386_prof_op_count
+%endif
+
+; Call a VM helper in C. The profiling build adds the instructions spent in
+; it to a counter (%2): table or string work, separate from dispatch.
+%macro PCALL 2
+%ifdef PROFILE
+    push eax
+    push edx
+    rdtsc
+    mov  [prof_t1], eax
+    pop  edx
+    pop  eax
+    call %1
+    push eax
+    push edx
+    rdtsc
+    sub  eax, [prof_t1]
+    add  [%2], eax
+    adc  dword [%2 + 4], 0
+    pop  edx
+    pop  eax
+%else
+    call %1
+%endif
+%endmacro
+%macro CALL_CFUNC 1                 ; %1 = register with the function
+%ifdef PROFILE
+    push eax
+    push edx
+    rdtsc
+    mov  [prof_t0], eax
+    pop  edx
+    pop  eax
+    call %1
+    push eax
+    push edx
+    rdtsc
+    sub  eax, [prof_t0]
+    add  [_p386_prof_cfunc], eax
+    adc  dword [_p386_prof_cfunc + 4], 0
+    pop  edx
+    pop  eax
+%else
+    call %1
+%endif
+%endmacro
+
+; GC safe point: collect if an allocation asked for it. Use only between
+; instructions, where every live value is in a register of a live frame,
+; a global, an upvalue or the varargs stack. Keeps all registers.
+%macro GC_POLL 0
+    cmp  dword [_p386_gc_pending], 0
+    je   %%no_gc
+    call gc_safepoint
+%%no_gc:
+%endmacro
 
 ; Metamethod events: same order as the enum in include/p386_meta.h.
 %define EV_ADD    0
@@ -171,6 +242,30 @@ dispatch_table:
     dd op_return
 %elif i = 0x54
     dd op_vararg
+%elif i = 0x58
+    dd op_flr
+%elif i = 0x59
+    dd op_ceil
+%elif i = 0x5A
+    dd op_abs
+%elif i = 0x5B
+    dd op_sgn
+%elif i = 0x5C
+    dd op_min
+%elif i = 0x5D
+    dd op_max
+%elif i = 0x60
+    dd op_beq
+%elif i = 0x61
+    dd op_bne
+%elif i = 0x62
+    dd op_blt
+%elif i = 0x63
+    dd op_ble
+%elif i = 0x64
+    dd op_bgt
+%elif i = 0x65
+    dd op_bge
 %else
     dd op_unimpl
 %endif
@@ -183,12 +278,110 @@ dest_tmp resd 1
 scratch_a resd 8
 meta_ops resd 4                     ; two operand values for p386_meta_arith
 meta_post resd 1                    ; POST_* code for an EQ/NE slow path
+fast_tmp resd 2                     ; value of a SETFIELD/SETTABLE fast path
+frame_base resd 1                   ; callee base during frame_push
+%ifdef PROFILE
+prof_t0 resd 1
+prof_t1 resd 1
+%endif
+%ifdef PROFILE_OPS
+prof_prev_t resd 1
+prof_prev_op resd 1
+%endif
 
 extern _p8_ram
 
 section .text
-global _p386_vm_run:function
-_p386_vm_run:
+
+; Fetch, decode and jump to the next handler. Every handler ends with its
+; own copy (replicated dispatch): no jump back to a shared loop, and no
+; per-instruction bookkeeping. The handler gets eax = instruction word,
+; edx = opcode. vm->ip and vm->last_opcode are written only when the
+; dispatcher exits (see done).
+%macro NEXT 0
+%ifdef PROFILE
+    inc  dword [_p386_prof_ops]    ; bytecodes run (profiling build only)
+%endif
+    mov  eax, [esi]
+    add  esi, 4
+    movzx edx, al
+%ifdef PROFILE_OPS
+    call prof_op
+%endif
+    jmp  [dispatch_table + edx*4]
+%endmacro
+
+; Load an RK operand. In: dl = RK byte. Out: eax = value, ecx = tag, CF=0;
+; CF=1 on error (vm status set). Clobbers ebx. A register operand (the
+; common case) is read inline; a constant goes through load_rk.
+%macro LOAD_RK 0
+    test dl, 0x80
+    jz   %%reg
+    call load_rk
+    jmp  %%done
+%%reg:
+    movzx ebx, dl
+    mov  eax, [ebp + ebx*8]
+    mov  ecx, [ebp + ebx*8 + 4]
+%%done:
+%endmacro
+
+; Find an interned string key in a table's hash part (see p386_obj.c:
+; open addressing, linear probing, 16-byte entries {key, value}).
+; In: ebx = P386Table*, eax = P386String* (interned). Found: jumps to %1
+; with ebx = the entry. Not found: falls through. Clobbers ecx, edx.
+; A key made without the intern table (out of memory only) is not found
+; here; the slow path in C then compares by content.
+%macro HASH_FIND_STR 1
+    mov  ecx, [ebx + TAB_HCAP]
+    test ecx, ecx
+    jz   %%absent
+    mov  ebx, [ebx + TAB_HASH]
+    dec  ecx
+    shl  ecx, 4                    ; mask, in bytes
+    mov  edx, [eax + STR_HASH]
+    shl  edx, 4
+%%probe:
+    and  edx, ecx
+    cmp  [ebx + edx], eax          ; key bits
+    je   %%bits
+%%next:
+    cmp  dword [ebx + edx + 4], TAG_NIL
+    je   %%absent                  ; empty slot: end of the probe chain
+    add  edx, ENTRY_SIZE
+    jmp  %%probe
+%%bits:
+    cmp  dword [ebx + edx + 4], TAG_STR
+    jne  %%next
+    add  ebx, edx
+    jmp  %1
+%%absent:
+%endmacro
+
+; Load K[edx] (a GETFIELD/SETFIELD name) into eax as an interned string.
+; Jumps to %1 if the index or the type is wrong (the slow path reports it).
+; Clobbers ecx.
+%macro LOAD_KSTR_FAST 1
+    mov  ecx, [edi + VM_CURRENT_PROTO]
+    push edx
+    movzx edx, word [ecx + PE_N_CONSTS]
+    cmp  [esp], edx
+    pop  edx
+    jae  %1
+    mov  eax, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  eax, [ecx + PE_CONSTS_OFF]
+    cmp  dword [eax + edx*8 + 4], TAG_STR
+    jne  %1
+    mov  eax, [eax + edx*8]        ; string table index
+    mov  ecx, [edi + VM_KSTR]
+    mov  eax, [ecx + eax*4]        ; interned at load
+%endmacro
+
+; int p386_vm_exec(P386VMState *vm, int cont)
+; cont = 0: start the current function. cont = 1: continue at vm->ip (after
+; a thread switch; see p386_co.c).
+global _p386_vm_exec:function
+_p386_vm_exec:
     push ebp
     mov  ebp, esp
     push ebx
@@ -196,18 +389,34 @@ _p386_vm_run:
     push edi
 
     mov  edi, [ebp+8]              ; VMState*
+    mov  eax, [ebp+12]             ; cont
     mov  ebx, [edi + VM_CURRENT_PROTO]
     mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
     add  esi, [ebx + PE_BYTECODE_OFF]
+    test eax, eax
+    jz   .start
+    mov  esi, [edi + VM_IP]
+.start:
     mov  ebp, [edi + VM_BASE]      ; EBP is VM register base in dispatch
 
+; Shared copy of NEXT, for conditional jumps and slow paths.
 dispatch_next:
-    mov  [edi + VM_IP], esi
-    mov  eax, [esi]
-    add  esi, 4
-    movzx edx, al
-    mov  [edi + VM_LAST_OPCODE], edx
-    jmp  [dispatch_table + edx*4]
+    NEXT
+
+; Collect garbage (see GC_POLL). Keeps eax, ecx, edx; the C call keeps
+; ebx, esi, edi and ebp.
+gc_safepoint:
+    push eax
+    push ecx
+    push edx
+    mov  [edi + VM_BASE], ebp
+    push edi
+    call _p386_gc_safepoint
+    add  esp, 4
+    pop  edx
+    pop  ecx
+    pop  eax
+    ret
 
 ; --- helpers ------------------------------------------------------------
 ; input: dl = RK byte. output: eax=value, ecx=tag. clobbers ebx.
@@ -231,20 +440,8 @@ load_rk:
     mov  eax, [eax + ebx*8]
     cmp  ecx, TAG_STR
     jne  .ret_ok
-    push edx
-    push eax
-    mov  edx, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
-    lea  edx, [edx + eax*8]
-    push dword [edx + 4]
-    mov  eax, [edi + VM_PROGRAM + LP_BUF]
-    add  eax, [edx]
-    push eax
-    call _p386_string_intern
-    add  esp, 8
-    pop  ecx
-    pop  edx
-    test eax, eax
-    jz   .bounds
+    mov  ecx, [edi + VM_KSTR]      ; interned at load
+    mov  eax, [ecx + eax*4]
     mov  ecx, TAG_STR
 .ret_ok:
     clc
@@ -261,7 +458,24 @@ store_bool_al:
     movzx eax, al
     mov  [ebp + ebx*8], eax
     mov  dword [ebp + ebx*8 + 4], TAG_BOOL
-    jmp  dispatch_next
+    NEXT
+
+branch_al:
+    ; Fused compare (BEQ..BGE): al = result (0/1). esi points at the
+    ; JMPF/JMPT A sBx that follows; decide it here and skip it. JMPF jumps
+    ; when al = 0, JMPT when al = 1.
+    mov  edx, [esi]
+    add  esi, 4
+    cmp  dl, OP_JMPT
+    sete cl
+    cmp  al, cl
+    jne  dispatch_next
+    sar  edx, 16                   ; sBx
+    lea  esi, [esi + edx*4]
+    test edx, edx
+    jns  dispatch_next
+    GC_POLL                        ; backward (repeat-until): a safe point
+    NEXT
 
 ; --- movement -----------------------------------------------------------
 op_move:
@@ -272,7 +486,7 @@ op_move:
     mov  edx, [ebp + edx*8 + 4]
     mov  [ebp + ecx*8], ebx
     mov  [ebp + ecx*8 + 4], edx
-    jmp  dispatch_next
+    NEXT
 
 op_loadk:
     movzx ecx, ah                  ; A
@@ -288,36 +502,24 @@ op_loadk:
     mov  edx, [eax + edx*8 + 4]
     cmp  edx, TAG_STR
     jne  .store_raw
-    push ecx
-    mov  eax, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
-    lea  eax, [eax + ebx*8]
-    push dword [eax + 4]
-    mov  ebx, [edi + VM_PROGRAM + LP_BUF]
-    add  ebx, [eax]
-    push ebx
-    call _p386_string_intern
-    add  esp, 8
-    pop  ecx
-    test eax, eax
-    jz   err_oom
-    mov  ebx, eax
-    mov  edx, TAG_STR
+    mov  eax, [edi + VM_KSTR]      ; interned at load
+    mov  ebx, [eax + ebx*4]
 .store_raw:
     mov  [ebp + ecx*8], ebx
     mov  [ebp + ecx*8 + 4], edx
-    jmp  dispatch_next
+    NEXT
 
 op_loadt:
     movzx ecx, ah
     mov  dword [ebp + ecx*8], 1
     mov  dword [ebp + ecx*8 + 4], TAG_BOOL
-    jmp  dispatch_next
+    NEXT
 
 op_loadf:
     movzx ecx, ah
     mov  dword [ebp + ecx*8], 0
     mov  dword [ebp + ecx*8 + 4], TAG_BOOL
-    jmp  dispatch_next
+    NEXT
 
 op_loadn:
     movzx ecx, ah                  ; A
@@ -342,7 +544,7 @@ op_getglobal:                       ; A, Bx
     mov  edx, [edi + VM_GLOBALS + edx*8 + 4]
     mov  [ebp + ecx*8], ebx
     mov  [ebp + ecx*8 + 4], edx
-    jmp  dispatch_next
+    NEXT
 
 op_setglobal:                       ; A, Bx
     movzx ecx, ah
@@ -354,7 +556,7 @@ op_setglobal:                       ; A, Bx
     mov  ecx, [ebp + ecx*8 + 4]
     mov  [edi + VM_GLOBALS + edx*8], ebx
     mov  [edi + VM_GLOBALS + edx*8 + 4], ecx
-    jmp  dispatch_next
+    NEXT
 
 op_getupval:
     movzx ecx, ah                  ; A
@@ -376,7 +578,7 @@ op_getupval:
     mov  edx, [ebx + 4]
     mov  [ebp + ecx*8], eax
     mov  [ebp + ecx*8 + 4], edx
-    jmp  dispatch_next
+    NEXT
 
 op_setupval:
     movzx ecx, ah                  ; A
@@ -398,7 +600,7 @@ op_setupval:
     mov  edx, [ebp + ecx*8 + 4]
     mov  [ebx + 0], eax
     mov  [ebx + 4], edx
-    jmp  dispatch_next
+    NEXT
 
 op_close:
     movzx ecx, ah                  ; A
@@ -408,14 +610,14 @@ op_close:
     push eax
     call _p386_close_upvalues
     add  esp, 8
-    jmp  dispatch_next
+    NEXT
 
 ; --- objects -------------------------------------------------------------
 store_value_eax_ecx:
     mov  ebx, [dest_tmp]
     mov  [ebp + ebx*8], eax
     mov  [ebp + ebx*8 + 4], ecx
-    jmp  dispatch_next
+    NEXT
 
 op_newtable:
     movzx ecx, ah
@@ -425,7 +627,7 @@ op_newtable:
     movzx eax, ah
     push eax
     push edx
-    call _p386_table_new
+    PCALL _p386_table_new, _p386_prof_table
     add  esp, 8
     test eax, eax
     jz   err_oom
@@ -433,20 +635,67 @@ op_newtable:
     jmp  store_value_eax_ecx
 
 build_key_rk:
-    call load_rk
+    LOAD_RK
     jc   done
     mov  [scratch_a + 0], eax
     mov  [scratch_a + 4], ecx
     ret
 
+; Fast paths for table access handle the common case inline: an integer
+; key inside the array part, or a string key that is in the hash part.
+; Everything else (no hash part, absent key, nil value that may need
+; __index, metatables, inserts) goes to the general path below, which
+; starts again from the instruction word.
 op_gettable:
     movzx ecx, ah
     mov  [dest_tmp], ecx
     shr  eax, 16
     movzx ebx, al
-    mov  ecx, [ebp + ebx*8 + 4]
-    cmp  ecx, TAG_TAB
+    cmp  dword [ebp + ebx*8 + 4], TAG_TAB
     jne  err_type_tab
+    mov  ebx, [ebp + ebx*8]
+    mov  [scratch_a + 8], ebx
+    mov  dl, ah
+    LOAD_RK
+    jc   done
+    mov  ebx, [scratch_a + 8]
+    cmp  ecx, TAG_NUM
+    jne  .key_str
+    test eax, 0xffff
+    jnz  .general
+    sar  eax, 16
+    dec  eax                       ; 0-based index; unsigned compare
+    cmp  eax, [ebx + TAB_ASIZE]    ; also rejects keys <= 0
+    jae  .general
+    mov  ecx, [ebx + TAB_ARR]
+    mov  edx, [ecx + eax*8 + 4]
+    cmp  edx, TAG_NIL
+    je   .general
+    mov  eax, [ecx + eax*8]
+    mov  ecx, [dest_tmp]
+    mov  [ebp + ecx*8], eax
+    mov  [ebp + ecx*8 + 4], edx
+    NEXT
+.key_str:
+    cmp  ecx, TAG_STR
+    jne  .general
+    HASH_FIND_STR .hit
+    jmp  .general
+.hit:
+    mov  eax, [ebx + 8]
+    mov  edx, [ebx + 12]
+    cmp  edx, TAG_NIL
+    je   .general
+    mov  ecx, [dest_tmp]
+    mov  [ebp + ecx*8], eax
+    mov  [ebp + ecx*8 + 4], edx
+    NEXT
+.general:
+    mov  eax, [esi - 4]
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    movzx ebx, al
     mov  ebx, [ebp + ebx*8]
     mov  [scratch_a + 8], ebx
     mov  dl, ah
@@ -458,7 +707,7 @@ op_gettable:
     lea  edx, [scratch_a]
     push edx
     push dword [scratch_a + 8]
-    call _p386_table_get
+    PCALL _p386_table_get, _p386_prof_table
     add  esp, 12
     mov  ebx, [dest_tmp]
     cmp  dword [ebp + ebx*8 + 4], TAG_NIL
@@ -479,22 +728,66 @@ op_gettable:
 
 op_settable:
     movzx ebx, ah
-    mov  ecx, [ebp + ebx*8 + 4]
-    cmp  ecx, TAG_TAB
+    cmp  dword [ebp + ebx*8 + 4], TAG_TAB
     jne  err_type_tab
+    mov  ebx, [ebp + ebx*8]
+    cmp  dword [ebx + TAB_METATABLE], 0
+    jne  .general
+    mov  [scratch_a + 8], ebx
+    mov  edx, eax
+    shr  edx, 24                   ; C: value
+    LOAD_RK
+    jc   done
+    cmp  ecx, TAG_NIL              ; a nil store can trim or delete: C
+    je   .general
+    mov  [fast_tmp], eax
+    mov  [fast_tmp + 4], ecx
+    mov  edx, [esi - 4]
+    shr  edx, 16                   ; B: key
+    LOAD_RK
+    jc   done
+    mov  ebx, [scratch_a + 8]
+    cmp  ecx, TAG_NUM
+    jne  .key_str
+    test eax, 0xffff
+    jnz  .general
+    sar  eax, 16
+    dec  eax
+    cmp  eax, [ebx + TAB_ASIZE]
+    jae  .general                  ; outside the array part (or an append)
+    mov  ebx, [ebx + TAB_ARR]
+    lea  ebx, [ebx + eax*8]
+    jmp  .store
+.key_str:
+    cmp  ecx, TAG_STR
+    jne  .general
+    HASH_FIND_STR .hit
+    jmp  .general
+.hit:
+    add  ebx, 8                    ; the entry's value
+.store:
+    mov  eax, [fast_tmp]
+    mov  [ebx], eax
+    mov  eax, [fast_tmp + 4]
+    mov  [ebx + 4], eax
+    NEXT
+.general:
+    mov  eax, [esi - 4]
+    movzx ebx, ah
+    mov  ecx, [ebp + ebx*8 + 4]
     mov  ebx, [ebp + ebx*8]
     push eax
     push ebx
     sub  esp, 16
     mov  edx, [esp + 20]
     shr  edx, 16
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop24
     mov  [esp + 0], eax
     mov  [esp + 4], ecx
     mov  edx, [esp + 20]
     shr  edx, 24
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop24
     mov  [esp + 8], eax
     mov  [esp + 12], ecx
@@ -506,10 +799,10 @@ op_settable:
     push eax
     push edx
     push ebx
-    call _p386_table_set
+    PCALL _p386_table_set, _p386_prof_table
     add  esp, 12
     add  esp, 24
-    jmp  dispatch_next
+    NEXT
 .meta:
     push eax                       ; value
     push edx                       ; key
@@ -532,18 +825,9 @@ load_kstr:
     mov  ecx, [eax + edx*8 + 4]
     cmp  ecx, TAG_STR
     jne  .typestr
-    mov  eax, [eax + edx*8]
-    mov  edx, [edi + VM_PROGRAM + LP_STRING_ENTRIES]
-    lea  edx, [edx + eax*8]
-    push dword [edx + 4]
-    mov  eax, [edi + VM_PROGRAM + LP_BUF]
-    add  eax, [edx]
-    push eax
-    call _p386_string_intern
-    add  esp, 8
-    test eax, eax
-    jz   .oom
-    mov  ecx, TAG_STR
+    mov  eax, [eax + edx*8]        ; string index
+    mov  edx, [edi + VM_KSTR]      ; interned at load
+    mov  eax, [edx + eax*4]
     clc
     ret
 .bounds:
@@ -562,14 +846,69 @@ load_kstr:
     stc
     ret
 
+; GETFIELD A B C: R[A] = R[B][K[C]], K[C] a string. Two words follow the
+; instruction (an inline cache):
+;   [esi]     the interned name (the loader writes it; 0 if K[C] is not a
+;             string)
+;   [esi + 4] byte offset of the hash slot where the name was found last
+;             time. Any value is safe: it is masked to the hash part and the
+;             key is checked.
+; Objects made by the same code have the same keys in the same slots, so
+; one compare usually finds the key. On a miss, probe and remember the slot.
 op_getfield:
+    shr  eax, 16
+    movzx ebx, al                  ; B
+    cmp  dword [ebp + ebx*8 + 4], TAG_TAB
+    jne  err_type_tab
+    mov  ebx, [ebp + ebx*8]        ; table
+    mov  ecx, [ebx + TAB_HCAP]
+    dec  ecx
+    js   .general                  ; no hash part
+    shl  ecx, 4                    ; mask, in bytes
+    mov  edx, [esi + 4]            ; cached slot
+    and  edx, ecx
+    mov  eax, [esi]                ; name
+    mov  ebx, [ebx + TAB_HASH]
+    cmp  [ebx + edx], eax
+    jne  .probe
+    cmp  dword [ebx + edx + 4], TAG_STR
+    jne  .probe
+.hit:
+    mov  eax, [ebx + edx + 8]
+    mov  ecx, [ebx + edx + 12]
+    cmp  ecx, TAG_NIL
+    je   .general                  ; may need __index
+    movzx edx, byte [esi - 3]      ; A
+    add  esi, 8                    ; step over the cache words
+    mov  [ebp + edx*8], eax
+    mov  [ebp + edx*8 + 4], ecx
+    NEXT
+.probe:                            ; eax = name, ebx = hash part, ecx = mask
+    test eax, eax
+    jz   .general                  ; K[C] is not a string: general reports
+    mov  edx, [eax + STR_HASH]
+    shl  edx, 4
+.probe_slot:
+    and  edx, ecx
+    cmp  [ebx + edx], eax          ; key bits
+    je   .probe_bits
+.probe_next:
+    cmp  dword [ebx + edx + 4], TAG_NIL
+    je   .general                  ; empty slot: absent (maybe __index)
+    add  edx, ENTRY_SIZE
+    jmp  .probe_slot
+.probe_bits:
+    cmp  dword [ebx + edx + 4], TAG_STR
+    jne  .probe_next
+    mov  [esi + 4], edx            ; remember the slot
+    jmp  .hit
+.general:
+    mov  eax, [esi - 4]
     movzx ecx, ah                  ; A
     mov  [dest_tmp], ecx
     shr  eax, 16
     movzx ebx, al                  ; B
     mov  edx, [ebp + ebx*8 + 4]
-    cmp  edx, TAG_TAB
-    jne  err_type_tab
     push dword [ebp + ebx*8]       ; save table ptr
     movzx edx, ah                  ; C: const idx
     call load_kstr
@@ -583,13 +922,14 @@ op_getfield:
     lea  ecx, [esp + 4]
     push ecx                       ; key ptr
     push ebx                       ; table
-    call _p386_table_get
+    PCALL _p386_table_get, _p386_prof_table
     add  esp, 12                   ; the key stays on the stack
     mov  ecx, [dest_tmp]
     cmp  dword [ebp + ecx*8 + 4], TAG_NIL
     je   .miss
     add  esp, 8
-    jmp  dispatch_next
+    add  esi, 8                    ; step over the cache words
+    NEXT
 .miss:
     cmp  dword [ebx + TAB_METATABLE], 0
     je   .no_meta
@@ -602,16 +942,42 @@ op_getfield:
     call _p386_meta_index
     add  esp, 16
     add  esp, 8
+    add  esi, 8                    ; an __index frame returns past the cache
     jmp  meta_result
 .no_meta:
     add  esp, 8
-    jmp  dispatch_next
+    add  esi, 8
+    NEXT
 
 op_setfield:
     movzx ebx, ah                  ; A (table reg)
-    mov  ecx, [ebp + ebx*8 + 4]
-    cmp  ecx, TAG_TAB
+    cmp  dword [ebp + ebx*8 + 4], TAG_TAB
     jne  err_type_tab
+    mov  ebx, [ebp + ebx*8]
+    cmp  dword [ebx + TAB_METATABLE], 0
+    jne  .general
+    mov  [scratch_a + 8], ebx
+    mov  edx, eax
+    shr  edx, 24                   ; C: value (RK)
+    LOAD_RK
+    jc   done
+    mov  [fast_tmp], eax
+    mov  [fast_tmp + 4], ecx
+    movzx edx, byte [esi - 2]      ; B: name constant
+    LOAD_KSTR_FAST .general
+    mov  ebx, [scratch_a + 8]
+    HASH_FIND_STR .hit
+    jmp  .general                  ; a new key: insert in C
+.hit:
+    mov  eax, [fast_tmp]           ; the key stays; only the value changes
+    mov  [ebx + 8], eax
+    mov  eax, [fast_tmp + 4]
+    mov  [ebx + 12], eax
+    NEXT
+.general:
+    mov  eax, [esi - 4]
+    movzx ebx, ah                  ; A (table reg)
+    mov  ecx, [ebp + ebx*8 + 4]
     push dword [ebp + ebx*8]       ; table ptr
     push eax                       ; save instruction word
     shr  eax, 16
@@ -622,7 +988,7 @@ op_setfield:
     push ecx                       ; key tag
     push eax                       ; key value
     shr  edx, 24                   ; C: RK value (a constructor field
-    call load_rk                   ; like {x=0} uses a constant)
+    LOAD_RK                   ; like {x=0} uses a constant)
     jc   err_rk_pop3
     mov  ebx, [esp + 8]            ; table ptr
     push ecx                       ; val tag
@@ -634,10 +1000,10 @@ op_setfield:
     push eax
     push ecx
     push ebx                       ; table
-    call _p386_table_set
+    PCALL _p386_table_set, _p386_prof_table
     add  esp, 12
     add  esp, 20
-    jmp  dispatch_next
+    NEXT
 .meta:
     push eax                       ; value
     push ecx                       ; key
@@ -648,17 +1014,24 @@ op_setfield:
     add  esp, 20
     jmp  meta_result_discard
 
-op_concat:
+op_concat:                          ; A, RK(B), RK(C)
     movzx ecx, ah
     mov  [dest_tmp], ecx
     shr  eax, 16
-    movzx ebx, al
-    movzx edx, ah
-    lea  eax, [ebp + edx*8]
-    push eax
-    lea  eax, [ebp + ebx*8]
-    push eax
-    call _p386_value_concat
+    mov  dl, al
+    mov  dh, ah
+    LOAD_RK
+    jc   done
+    mov  [meta_ops], eax
+    mov  [meta_ops + 4], ecx
+    mov  dl, dh
+    LOAD_RK
+    jc   done
+    mov  [meta_ops + 8], eax
+    mov  [meta_ops + 12], ecx
+    push dword meta_ops + 8
+    push dword meta_ops
+    PCALL _p386_value_concat, _p386_prof_string
     add  esp, 8
     test eax, eax
     jz   concat_meta
@@ -673,13 +1046,13 @@ op_concat:
     shr  eax, 16
     mov  dl, al                    ; B RK
     mov  dh, ah                    ; C RK
-    call load_rk
+    LOAD_RK
     jc   done
     cmp  ecx, TAG_NUM
     jne  %%meta
     push eax                       ; left value
     mov  dl, dh
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop1
     cmp  ecx, TAG_NUM
     jne  %%meta_pop
@@ -689,7 +1062,7 @@ op_concat:
     mov  ecx, [dest_tmp]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_NUM
-    jmp  dispatch_next
+    NEXT
 %%meta_pop:
     add  esp, 4
 %%meta:
@@ -831,7 +1204,7 @@ op_neg:
     mov  [dest_tmp], ecx
     shr  eax, 16
     mov  dl, al
-    call load_rk
+    LOAD_RK
     jc   done
     cmp  ecx, TAG_NUM
     jne  neg_meta
@@ -839,14 +1212,14 @@ op_neg:
     mov  ecx, [dest_tmp]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_NUM
-    jmp  dispatch_next
+    NEXT
 
 op_bnot:
     movzx ecx, ah
     mov  [dest_tmp], ecx
     shr  eax, 16
     mov  dl, al
-    call load_rk
+    LOAD_RK
     jc   done
     cmp  ecx, TAG_NUM
     jne  err_type_num
@@ -856,23 +1229,23 @@ op_bnot:
     mov  ecx, [dest_tmp]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_NUM
-    jmp  dispatch_next
+    NEXT
 
 ; --- comparisons / boolean ---------------------------------------------
-%macro CMP_NUM 4                    ; %3 = event, %4 = 1: swap operands
+%macro CMP_NUM 5                    ; %3 = event, %4 = 1: swap operands, %5 = tail
 %1:
     movzx ecx, ah
     mov  [dest_tmp], ecx
     shr  eax, 16
     mov  dl, al
     mov  dh, ah
-    call load_rk
+    LOAD_RK
     jc   done
     cmp  ecx, TAG_NUM
     jne  %%left_str
     push eax
     mov  dl, dh
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop1
     cmp  ecx, TAG_NUM
     jne  %%meta_pop
@@ -880,24 +1253,24 @@ op_bnot:
     pop  eax
     cmp  eax, ebx
     %2 al
-    jmp  store_bool_al
+    jmp  %5
 %%left_str:                        ; left is not NUM: STR/STR is legal
     cmp  ecx, TAG_STR
     jne  %%meta
     push eax                       ; left string
     mov  dl, dh
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop1
     cmp  ecx, TAG_STR
     jne  %%meta_pop
     pop  ebx                       ; left string
     push eax                       ; arg 2: right
     push ebx                       ; arg 1: left
-    call _p386_string_cmp
+    PCALL _p386_string_cmp, _p386_prof_string
     add  esp, 8
     test eax, eax
     %2 al
-    jmp  store_bool_al
+    jmp  %5
 %%meta_pop:
     add  esp, 4
 %%meta:                            ; other types: try __lt / __le
@@ -906,78 +1279,72 @@ op_bnot:
     jmp  cmp_meta
 %endmacro
 
-op_eq:
+; EQ/NE A B C: R[A] = RK(B) ==/~= RK(C). The fused form (BEQ/BNE) has the
+; same operands and is followed by a JMPF or JMPT on R[A]: it goes to
+; branch_al and decides that jump itself. Only an __eq call stores R[A]; the
+; JMPF/JMPT then runs as usual.
+%macro EQ_OP 3                     ; %2 = 0: EQ, 1: NE; %3 = tail
+%1:
     movzx ecx, ah
     mov  [dest_tmp], ecx
     shr  eax, 16
     mov  dl, al
     mov  dh, ah
-    call load_rk
+    LOAD_RK
     jc   done
     push eax
     push ecx
     mov  dl, dh
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop2
     pop  ebx                       ; left tag
     pop  edx                       ; left value
     cmp  ebx, ecx
-    jne  .false
+    jne  %%differ
     cmp  edx, eax
-    je   .true
+    je   %%same
     cmp  ecx, TAG_TAB              ; two different tables: try __eq
-    jne  .false
+    jne  %%differ
+    cmp  dword [edx + TAB_METATABLE], 0
+    jne  %%meta                    ; __eq only if a metatable is set
+    cmp  dword [eax + TAB_METATABLE], 0
+    je   %%differ
+%%meta:
+%if %2 = 0
     mov  dword [meta_post], POST_BOOL
-    jmp  eq_meta
-.true:
-    mov  al, 1
-    jmp  store_bool_al
-.false:
-    xor  al, al
-    jmp  store_bool_al
-
-op_ne:
-    movzx ecx, ah
-    mov  [dest_tmp], ecx
-    shr  eax, 16
-    mov  dl, al
-    mov  dh, ah
-    call load_rk
-    jc   done
-    push eax
-    push ecx
-    mov  dl, dh
-    call load_rk
-    jc   err_rk_pop2
-    pop  ebx
-    pop  edx
-    cmp  ebx, ecx
-    jne  .true
-    cmp  edx, eax
-    je   .false
-    cmp  ecx, TAG_TAB              ; two different tables: try __eq
-    jne  .true
+%else
     mov  dword [meta_post], POST_NOT
+%endif
     jmp  eq_meta
-.false:
-    xor  al, al
-    jmp  store_bool_al
-.true:
-    mov  al, 1
-    jmp  store_bool_al
+%%same:
+    mov  al, 1 - %2
+    jmp  %3
+%%differ:
+    mov  al, %2
+    jmp  %3
+%endmacro
 
-CMP_NUM op_lt, setl, EV_LT, 0
-CMP_NUM op_le, setle, EV_LE, 0
-CMP_NUM op_gt, setg, EV_LT, 1
-CMP_NUM op_ge, setge, EV_LE, 1
+EQ_OP op_eq, 0, store_bool_al
+EQ_OP op_ne, 1, store_bool_al
+EQ_OP op_beq, 0, branch_al
+EQ_OP op_bne, 1, branch_al
+
+CMP_NUM op_lt, setl, EV_LT, 0, store_bool_al
+CMP_NUM op_le, setle, EV_LE, 0, store_bool_al
+CMP_NUM op_gt, setg, EV_LT, 1, store_bool_al
+CMP_NUM op_ge, setge, EV_LE, 1, store_bool_al
+CMP_NUM op_blt, setl, EV_LT, 0, branch_al
+CMP_NUM op_ble, setle, EV_LE, 0, branch_al
+CMP_NUM op_bgt, setg, EV_LT, 1, branch_al
+CMP_NUM op_bge, setge, EV_LE, 1, branch_al
 
 op_not:
     movzx ecx, ah
     mov  [dest_tmp], ecx
     shr  eax, 16
-    movzx edx, al
-    mov  eax, [ebp + edx*8]
-    mov  ecx, [ebp + edx*8 + 4]
+    mov  dl, al                    ; B: RK
+    LOAD_RK
+    jc   done
     cmp  ecx, TAG_NIL
     je   .truth
     cmp  ecx, TAG_BOOL
@@ -995,9 +1362,11 @@ op_len:
     movzx ecx, ah                    ; A
     mov  [dest_tmp], ecx
     shr  eax, 16
-    movzx ebx, al                    ; B
-    mov  edx, [ebp + ebx*8 + 4]
-    mov  ecx, [ebp + ebx*8]
+    mov  dl, al                      ; B: RK
+    LOAD_RK
+    jc   done
+    mov  edx, ecx                    ; tag
+    mov  ecx, eax                    ; value
     cmp  edx, TAG_STR
     je   .str
     cmp  edx, TAG_TAB
@@ -1006,7 +1375,7 @@ op_len:
     jne  .meta
 .raw:
     push ecx
-    call _p386_table_len
+    PCALL _p386_table_len, _p386_prof_table
     add  esp, 4
     shl  eax, 16
     mov  ecx, TAG_NUM
@@ -1040,9 +1409,9 @@ op_peek:
     movzx edx, ah                    ; A
     mov  [dest_tmp], edx
     shr  eax, 16
-    movzx edx, al                    ; B register (not RK)
-    mov  eax, [ebp + edx*8]
-    mov  ecx, [ebp + edx*8 + 4]
+    mov  dl, al                      ; B: RK (an address can be a constant)
+    LOAD_RK
+    jc   done
     cmp  ecx, TAG_NUM
     jne  err_type_num
     shr  eax, 16                      ; fixed-point address -> integer address
@@ -1052,15 +1421,15 @@ op_peek:
     mov  ecx, [dest_tmp]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_NUM
-    jmp  dispatch_next
+    NEXT
 
 op_peek2:
     movzx edx, ah                    ; A
     mov  [dest_tmp], edx
     shr  eax, 16
-    movzx edx, al                    ; B register (not RK)
-    mov  eax, [ebp + edx*8]
-    mov  ecx, [ebp + edx*8 + 4]
+    mov  dl, al                      ; B: RK (an address can be a constant)
+    LOAD_RK
+    jc   done
     cmp  ecx, TAG_NUM
     jne  err_type_num
     shr  eax, 16                      ; fixed-point address -> integer address
@@ -1075,14 +1444,19 @@ op_peek2:
     mov  ecx, [dest_tmp]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_NUM
-    jmp  dispatch_next
+    NEXT
 
 ; --- control ------------------------------------------------------------
 op_jmp:
     shr  eax, 16
     movsx ebx, ax
     lea  esi, [esi + ebx*4]
-    jmp  dispatch_next
+    test ebx, ebx
+    js   .back
+    NEXT
+.back:                              ; loop: a safe point
+    GC_POLL
+    NEXT
 
 op_jmpf:
     movzx ecx, ah
@@ -1099,7 +1473,10 @@ op_jmpf:
     jnz  dispatch_next
 .take:
     lea  esi, [esi + ebx*4]
-    jmp  dispatch_next
+    test ebx, ebx
+    jns  dispatch_next
+    GC_POLL                        ; backward (repeat-until): a safe point
+    NEXT
 
 op_jmpt:
     movzx ecx, ah
@@ -1116,7 +1493,10 @@ op_jmpt:
     jz   dispatch_next
 .take:
     lea  esi, [esi + ebx*4]
-    jmp  dispatch_next
+    test ebx, ebx
+    jns  dispatch_next
+    GC_POLL                        ; backward (repeat-until): a safe point
+    NEXT
 
 ; --- loops --------------------------------------------------------------
 op_forprep:
@@ -1134,7 +1514,7 @@ op_forprep:
     sub  eax, [ebp + ecx*8 + 16]   ; idx -= step
     mov  [ebp + ecx*8], eax
     lea  esi, [esi + ebx*4]
-    jmp  dispatch_next
+    NEXT
 
 op_forloop:
     movzx ecx, ah                  ; A
@@ -1157,7 +1537,7 @@ op_forloop:
     js   .negative_step
     cmp  edx, [ebp + ecx*8 + 8]    ; positive step: idx <= limit
     jle  .take
-    jmp  dispatch_next
+    NEXT
 .negative_step:
     cmp  edx, [ebp + ecx*8 + 8]    ; negative step: idx >= limit
     jl   dispatch_next
@@ -1165,7 +1545,8 @@ op_forloop:
     mov  [ebp + ecx*8 + 24], edx   ; external loop variable R[A+3] = idx
     mov  dword [ebp + ecx*8 + 28], TAG_NUM
     lea  esi, [esi + ebx*4]
-    jmp  dispatch_next
+    GC_POLL                        ; loop: a safe point
+    NEXT
 
 op_tforcall:
     movzx ecx, ah                  ; A: R[A]=iterator, R[A+1]=state, R[A+2]=control
@@ -1189,7 +1570,7 @@ op_tforcall:
     lea  eax, [ebp + ecx*8 + 16]   ; current control R[A+2]
     push eax
     push dword [ebp + ecx*8 + 8]   ; table state value
-    call _p386_table_next
+    PCALL _p386_table_next, _p386_prof_table
     add  esp, 16
     pop  ecx
     pop  edx
@@ -1199,17 +1580,17 @@ op_tforcall:
     mov  dword [ebp + ecx*8 + 28], TAG_NIL
     mov  dword [ebp + ecx*8 + 32], 0
     mov  dword [ebp + ecx*8 + 36], TAG_NIL
-    jmp  dispatch_next
+    NEXT
 .got_entry:
     cmp  edx, 2
     jae  dispatch_next
     cmp  edx, 1
     jae  .one_result
-    jmp  dispatch_next
+    NEXT
 .one_result:
     mov  dword [ebp + ecx*8 + 32], 0
     mov  dword [ebp + ecx*8 + 36], TAG_NIL
-    jmp  dispatch_next
+    NEXT
 
 .lua_iter:
     ; TAG_FUNC iterator: call R[A](R[A+1], R[A+2]) as a normal Lua call whose
@@ -1241,7 +1622,8 @@ op_tforloop:
     mov  [ebp + ecx*8 + 16], eax   ; control R[A+2] = R[A+3]
     mov  [ebp + ecx*8 + 20], edx
     lea  esi, [esi + ebx*4]
-    jmp  dispatch_next
+    GC_POLL                        ; loop: a safe point
+    NEXT
 
 op_closure:
     movzx ecx, ah                  ; A
@@ -1330,7 +1712,7 @@ op_closure:
     mov  eax, [scratch_a + 12]
     mov  [ebp + ecx*8], eax
     mov  dword [ebp + ecx*8 + 4], TAG_FUNC
-    jmp  dispatch_next
+    NEXT
 
 op_tailcall:
     movzx ecx, ah                  ; A: function register
@@ -1377,14 +1759,21 @@ op_tailcall:
     lea  eax, [ebp + ecx*8 + 8]
     push eax                       ; args window
     push edi
-    call ebx
+    CALL_CFUNC ebx
     add  esp, 16
     pop  ebx                       ; nargs
     pop  ecx                       ; A
     pop  esi
     test eax, eax
     jns  .c_tail_returns
+    cmp  eax, P386_VM_SWITCH
+    jne  .c_tail_error
+    inc  ecx                       ; results go to R[A+1..], then RETURN
+    mov  [edi + VM_TAIL_REG], ecx
+.c_tail_error:
     mov  [edi + VM_STATUS], eax
+    cmp  dword [edi + VM_ERROR_MSG], 0
+    jne  done                      ; keep the builtin's own message
     mov  dword [edi + VM_ERROR_MSG], msg_type_func
     jmp  done
 .c_tail_returns:
@@ -1456,9 +1845,9 @@ op_tailcall:
     mov  ecx, [edi + VM_VARARG_SP]
     mov  edx, ecx
     add  edx, eax
-    cmp  edx, P386_VARARG_STACK_SLOTS
+    cmp  edx, [edi + VM_VARARGS_MAX]
     jbe  .tc_va_count_ok
-    mov  eax, P386_VARARG_STACK_SLOTS
+    mov  eax, [edi + VM_VARARGS_MAX]
     sub  eax, ecx
     jle  .tc_va_done
 .tc_va_count_ok:
@@ -1466,7 +1855,7 @@ op_tailcall:
     movzx edx, byte [ebx + PE_N_PARAMS]
     mov  esi, [scratch_a + 12]              ; &caller R[A+1]
     lea  esi, [esi + edx*8]                  ; skip named params
-    lea  edx, [edi + VM_VARARG_STACK]
+    mov  edx, [edi + VM_VARARGS]
     mov  ecx, [edi + VM_VARARG_SP]
     lea  edx, [edx + ecx*8]
     xor  ecx, ecx
@@ -1509,19 +1898,23 @@ op_tailcall:
     jmp  .lua_arg_copy_loop
 
 .lua_clear_rest:
+    ; Clear R[argcopy..n_regs) (TAG_NIL = 0, so zero both dwords).
     mov  ecx, [scratch_a + 8]
-.lua_clear_loop:
-    cmp  ecx, [dest_tmp]
-    jae  .lua_enter
-    mov  dword [ebp + ecx*8], 0
-    mov  dword [ebp + ecx*8 + 4], TAG_NIL
-    inc  ecx
-    jmp  .lua_clear_loop
+    mov  edx, [dest_tmp]
+    sub  edx, ecx
+    jbe  .lua_enter
+    push edi
+    lea  edi, [ebp + ecx*8]
+    lea  ecx, [edx*2]
+    xor  eax, eax
+    rep  stosd
+    pop  edi
 
 .lua_enter:
     mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
     add  esi, [ebx + PE_BYTECODE_OFF]
-    jmp  dispatch_next
+    GC_POLL                        ; frame complete: a safe point
+    NEXT
 
 op_call:
     movzx ecx, ah                  ; A: function register
@@ -1531,92 +1924,78 @@ op_call:
     je   .lua_func
     cmp  dword [ebp + ecx*8 + 4], TAG_CFUNC
     jne  call_meta
-    mov  ebx, [ebp + ecx*8]        ; raw C function pointer
-    test ebx, ebx
+    ; CFUNC fast path. The cdecl callee keeps ebx/esi/edi/ebp, so A stays
+    ; in ebx and nothing is saved around the call. want_rets is read again
+    ; from the instruction (C is the byte at [esi-1]) after the call.
+    mov  eax, [ebp + ecx*8]        ; raw C function pointer
+    test eax, eax
     jz   err_type_func
-    movzx eax, dl                  ; B = nargs + 1 (0 => from top)
-    test eax, eax
-    jnz  .fixed_args
-    mov  eax, [edi + VM_TOP]
-    lea  edx, [ebp + ecx*8 + 8]    ; first arg R[A+1]
-    sub  eax, edx
-    sar  eax, 3
-    jns  .args_ready
-    xor  eax, eax
-    jmp  .args_ready
-.fixed_args:
-    dec  eax                       ; nargs
+    mov  ebx, ecx                  ; A
+    movzx ecx, dh                  ; C = want_rets + 1 (0 => all)
+    sub  ecx, 1
+    adc  ecx, 0                    ; want_rets: C-1, or 0 when C is 0
+    push ecx                       ; want_rets
+    movzx ecx, dl                  ; B = nargs + 1 (0 => args up to top)
+    sub  ecx, 1
+    jc   .args_to_top
 .args_ready:
-    movzx edx, dh                  ; C = want_rets + 1 (0 => all)
-    test edx, edx
-    jz   .want_all
-    dec  edx
-.want_all:
-    push esi
+    push ecx                       ; nargs
+    lea  ecx, [ebp + ebx*8 + 8]    ; args/result window R[A+1..]
     push ecx
-    push edx
-    push eax
-    push edx                       ; want_rets
-    push eax                       ; nargs
-    lea  eax, [ebp + ecx*8 + 8]    ; args/result window starts after func
-    push eax
     push edi
-    call ebx
+    CALL_CFUNC eax
     add  esp, 16
-    pop  ebx                       ; nargs
-    pop  edx                       ; want_rets (0 means all)
-    pop  ecx                       ; A
-    pop  esi
-    test eax, eax
+    test eax, eax                  ; result count, or a VM status (< 0)
     js   .builtin_error
-    mov  ebx, eax                  ; actual return count
-    mov  eax, edx                  ; wanted fixed count, 0 => all actual
+    movzx edx, byte [esi - 1]      ; C of this CALL
+    sub  edx, 1
+    jz   .no_results               ; C = 1: a statement, keep no results
+    jnc  .want_fixed
+    mov  edx, eax                  ; C = 0: keep all results
+.want_fixed:
+    ; Move min(n, want) results from R[A+1..] down to R[A..], then pad
+    ; with nil up to want. ecx walks the destination.
+    lea  ecx, [ebp + ebx*8]
+    cmp  eax, edx
+    jbe  .count_ok
+    mov  eax, edx
+.count_ok:
+    sub  edx, eax                  ; nil padding
     test eax, eax
-    jnz  .copy_fixed
-    mov  eax, ebx
-.copy_fixed:
-    mov  [scratch_a], esi          ; preserve IP: the copy below uses esi as a
-                                   ; scratch and esi is the live instruction ptr
-    push eax                       ; ncopy/result slots requested
-    xor  edx, edx
-.copy_loop:
-    cmp  edx, eax
-    jae  .copy_done
-    cmp  edx, ebx
-    jae  .pad_nil
-    push eax
-    push edi
-    mov  eax, ecx
-    add  eax, edx
-    lea  edi, [ebp + eax*8]        ; destination R[A+i]
-    inc  eax
-    lea  eax, [ebp + eax*8]        ; source R[A+i+1]
-    mov  esi, [eax]
-    mov  [edi], esi
-    mov  esi, [eax + 4]
-    mov  [edi + 4], esi
-    pop  edi
-    pop  eax
-    jmp  .next_slot
-.pad_nil:
-    push eax
-    mov  eax, ecx
-    add  eax, edx
-    mov  dword [ebp + eax*8], 0
-    mov  dword [ebp + eax*8 + 4], TAG_NIL
-    pop  eax
-.next_slot:
-    inc  edx
-    jmp  .copy_loop
-.copy_done:
-    pop  eax
-    add  eax, ecx
-    lea  edx, [ebp + eax*8]
-    mov  [edi + VM_TOP], edx
-    mov  esi, [scratch_a]          ; restore IP clobbered by the copy loop
-    jmp  dispatch_next
+    jz   .pad
+.copy:
+    mov  ebx, [ecx + 8]
+    mov  [ecx], ebx
+    mov  ebx, [ecx + 12]
+    mov  [ecx + 4], ebx
+    add  ecx, 8
+    dec  eax
+    jnz  .copy
+.pad:
+    test edx, edx
+    jz   .copied
+.pad_loop:
+    mov  dword [ecx], 0
+    mov  dword [ecx + 4], TAG_NIL
+    add  ecx, 8
+    dec  edx
+    jnz  .pad_loop
+.copied:
+    mov  [edi + VM_TOP], ecx
+.no_results:
+    NEXT
+.args_to_top:
+    mov  ecx, [edi + VM_TOP]       ; nargs = (top - &R[A+1]) / 8
+    lea  edx, [ebp + ebx*8 + 8]
+    sub  ecx, edx
+    sar  ecx, 3
+    jns  .args_ready
+    xor  ecx, ecx
+    jmp  .args_ready
 .builtin_error:
     mov  [edi + VM_STATUS], eax
+    cmp  dword [edi + VM_ERROR_MSG], 0
+    jne  done                      ; keep the builtin's own message
     mov  dword [edi + VM_ERROR_MSG], msg_type_func
     jmp  done
 
@@ -1648,16 +2027,22 @@ op_call:
     dec  eax                       ; nargs
 .lua_nargs_ready:
     mov  [scratch_a + 4], eax      ; nargs
-    mov  [scratch_a], ecx          ; caller A
-    mov  [scratch_a + 20], ecx     ; return_reg = A (op_tforcall uses A+3)
+    mov  [scratch_a + 20], ecx     ; return_reg = A
+    mov  eax, [ebp + ecx*8]
+    mov  [scratch_a + 24], eax     ; closure
+    lea  eax, [ebp + ecx*8 + 8]    ; R[A+1]: the arguments are in place,
+    mov  [scratch_a + 12], eax     ; so the callee frame starts there
+    mov  dword [scratch_a + 28], POST_NONE
+    jmp  frame_push                ; (eax = callee base)
 
-; Shared Lua frame push. Entry contract (memory scratch, register-free):
+; Lua frame push. Entry contract (memory scratch, register-free):
 ;   [scratch_a]      = function register (closure in R[here], args at R[here+1..])
 ;   [scratch_a + 4]  = nargs
 ;   [scratch_a + 8]  = want_rets (0 => all)
 ;   [scratch_a + 20] = return_reg in the caller frame
 ; esi = return IP (instruction after the call site). Jumped to by
-; op_tforcall's .lua_iter path with return_reg = A+3.
+; op_tforcall's .lua_iter path with return_reg = A+3. The callee frame
+; goes above the caller's registers and the arguments are copied there.
 call_push_lua_frame:
     mov  ecx, [scratch_a]
     mov  eax, [ebp + ecx*8]
@@ -1672,11 +2057,21 @@ call_push_lua_frame:
 ;   [scratch_a + 24] = P386Closure*
 ;   [scratch_a + 28] = POST_* result fix-up
 call_push_lua_frame_ptr:
-    cmp  dword [edi + VM_CALL_DEPTH], CALL_STACK_DEPTH
-    jae  err_bounds
+    mov  eax, [edi + VM_CURRENT_PROTO]
+    movzx eax, byte [eax + PE_N_REGS]
+    lea  eax, [ebp + eax*8]        ; callee base = caller base + caller n_regs
+
+; Common frame push. In: eax = callee base (R0 of the new frame), and the
+; scratch contract above. For op_call the base is the first argument (the
+; arguments are already in place); otherwise they are copied to the base.
+; The callee's registers past its arguments are cleared to nil.
+frame_push:
+    mov  [frame_base], eax
     mov  eax, [edi + VM_CALL_DEPTH]
+    cmp  eax, [edi + VM_FRAMES_MAX]
+    jae  err_bounds
     imul eax, FRAME_SIZE
-    lea  eax, [edi + VM_CALL_STACK + eax]
+    add  eax, [edi + VM_FRAMES]
     mov  [eax + FRAME_RETURN_IP], esi
     mov  [eax + FRAME_RETURN_BASE], ebp
     mov  edx, [edi + VM_CURRENT_PROTO]
@@ -1702,69 +2097,84 @@ call_push_lua_frame_ptr:
     mov  [edi + VM_CURRENT_CLOSURE], eax
     mov  ebx, [eax + 4]            ; closure->proto
 
-    mov  eax, [edi + VM_CURRENT_PROTO]
-    movzx eax, byte [eax + PE_N_REGS]
-    lea  ebp, [ebp + eax*8]        ; callee base = caller base + caller n_regs
+    mov  ebp, [frame_base]
     mov  [edi + VM_BASE], ebp
     mov  [edi + VM_CURRENT_PROTO], ebx
     movzx edx, byte [ebx + PE_N_REGS]
-    mov  [dest_tmp], edx
     lea  eax, [ebp + edx*8]
     cmp  eax, [edi + VM_VALUE_STACK_END]
     ja   err_bounds
     mov  [edi + VM_TOP], eax
 
-    ; clear all callee registers to nil
-    xor  ecx, ecx
-.lua_clear_loop:
-    cmp  ecx, [dest_tmp]
-    jae  .lua_copy_args
-    mov  dword [ebp + ecx*8], 0
-    mov  dword [ebp + ecx*8 + 4], TAG_NIL
-    inc  ecx
-    jmp  .lua_clear_loop
+    ; Varargs first: in place, the extra arguments are in the registers
+    ; that are cleared below.
+    call setup_varargs
 
-.lua_copy_args:
-    mov  edx, [scratch_a + 4]      ; copy min(nargs, n_params)
+    ; k = min(nargs, n_params) arguments go to R[0..k).
+    mov  ecx, [scratch_a + 4]
     movzx eax, byte [ebx + PE_N_PARAMS]
-    cmp  edx, eax
-    jbe  .lua_copy_count_ready
-    mov  edx, eax
-.lua_copy_count_ready:
-    xor  ecx, ecx
-    mov  eax, [scratch_a + 12]
-.lua_arg_loop:
-    cmp  ecx, edx
-    jae  .lua_setup_varargs
-    mov  esi, [eax + ecx*8]
-    mov  [ebp + ecx*8], esi
-    mov  esi, [eax + ecx*8 + 4]
-    mov  [ebp + ecx*8 + 4], esi
-    inc  ecx
-    jmp  .lua_arg_loop
+    cmp  ecx, eax
+    jbe  .k_ready
+    mov  ecx, eax
+.k_ready:
+    mov  eax, [scratch_a + 12]     ; arguments
+    cmp  eax, ebp
+    je   .args_in_place
+    push ecx
+    xor  edx, edx
+.arg_loop:
+    cmp  edx, ecx
+    jae  .args_copied
+    mov  esi, [eax + edx*8]
+    mov  [ebp + edx*8], esi
+    mov  esi, [eax + edx*8 + 4]
+    mov  [ebp + edx*8 + 4], esi
+    inc  edx
+    jmp  .arg_loop
+.args_copied:
+    pop  ecx
+.args_in_place:
+    ; Clear R[k..n_regs) (TAG_NIL = 0, so zero both dwords).
+    movzx edx, byte [ebx + PE_N_REGS]
+    sub  edx, ecx
+    jbe  .lua_enter
+    push edi
+    lea  edi, [ebp + ecx*8]
+    lea  ecx, [edx*2]
+    xor  eax, eax
+    rep  stosd
+    pop  edi
 
-.lua_setup_varargs:
+.lua_enter:
+    mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
+    add  esi, [ebx + PE_BYTECODE_OFF]
+    GC_POLL                        ; frame complete: a safe point
+    NEXT
+
+; Set the callee's vararg window. In: ebx = callee proto, [scratch_a + 4] =
+; nargs, [scratch_a + 12] = first argument. Clobbers eax, ecx, edx, esi.
+setup_varargs:
     ; Default: empty vararg window anchored at current sp.
     mov  eax, [edi + VM_VARARG_SP]
     mov  [edi + VM_VARARG_BASE], eax
     mov  dword [edi + VM_VARARG_COUNT], 0
     ; Only vararg protos collect extra args.
     test byte [ebx + PE_FLAGS], P386_PROTO_FLAG_VARARG
-    jz   .lua_enter
+    jz   .va_none
     ; nextra = nargs - n_params (clamped at 0)
     mov  eax, [scratch_a + 4]      ; nargs
     movzx edx, byte [ebx + PE_N_PARAMS]
     sub  eax, edx
-    jle  .lua_enter                ; <=0: no extra args
-    ; clamp nextra so vararg_sp + nextra <= P386_VARARG_STACK_SLOTS
+    jle  .va_none                  ; <=0: no extra args
+    ; clamp nextra so vararg_sp + nextra <= varargs_max
     mov  ecx, [edi + VM_VARARG_SP]
     mov  edx, ecx
     add  edx, eax
-    cmp  edx, P386_VARARG_STACK_SLOTS
+    cmp  edx, [edi + VM_VARARGS_MAX]
     jbe  .lua_va_count_ok
-    mov  eax, P386_VARARG_STACK_SLOTS
+    mov  eax, [edi + VM_VARARGS_MAX]
     sub  eax, ecx                  ; available slots
-    jle  .lua_enter
+    jle  .va_none
 .lua_va_count_ok:
     mov  [scratch_a + 16], eax     ; nextra
     ; source = caller first-arg window + n_params
@@ -1772,7 +2182,7 @@ call_push_lua_frame_ptr:
     mov  esi, [scratch_a + 12]     ; &caller R[A+1]
     lea  esi, [esi + edx*8]        ; skip named params
     ; dest = &vararg_stack[vararg_sp]
-    lea  edx, [edi + VM_VARARG_STACK]
+    mov  edx, [edi + VM_VARARGS]
     mov  ecx, [edi + VM_VARARG_SP]
     lea  edx, [edx + ecx*8]
     xor  ecx, ecx
@@ -1792,11 +2202,8 @@ call_push_lua_frame_ptr:
     mov  [edi + VM_VARARG_COUNT], ecx
     add  eax, ecx
     mov  [edi + VM_VARARG_SP], eax
-
-.lua_enter:
-    mov  esi, [edi + VM_PROGRAM + LP_BYTECODE_SECTION]
-    add  esi, [ebx + PE_BYTECODE_OFF]
-    jmp  dispatch_next
+.va_none:
+    ret
 
 op_return:
     movzx ecx, ah                  ; A
@@ -1818,18 +2225,19 @@ op_return:
     cmp  dword [edi + VM_CALL_DEPTH], 0
     jne  .return_to_caller
     lea  eax, [ebp + ecx*8]
+    mov  [edi + VM_RET_BASE], eax  ; a coroutine's results start here
     lea  eax, [eax + edx*8]
     mov  [edi + VM_TOP], eax
     jmp  done_halted
 
 .return_to_caller:
-    mov  [scratch_a], ecx          ; return A
+    lea  eax, [ebp + ecx*8]
+    mov  [scratch_a + 8], eax      ; first result (callee R[A])
     mov  [scratch_a + 4], edx      ; actual returns
-    mov  [scratch_a + 8], ebp      ; callee base
     dec  dword [edi + VM_CALL_DEPTH]
     mov  eax, [edi + VM_CALL_DEPTH]
     imul eax, FRAME_SIZE
-    lea  eax, [edi + VM_CALL_STACK + eax]
+    add  eax, [edi + VM_FRAMES]
     mov  esi, [eax + FRAME_RETURN_IP]
     mov  ebx, [eax + FRAME_RETURN_PROTO]
     mov  [edi + VM_CURRENT_PROTO], ebx
@@ -1845,63 +2253,58 @@ op_return:
     mov  edx, [eax + FRAME_SAVED_VARARG_SP]
     mov  [edi + VM_VARARG_SP], edx
     movzx ecx, byte [eax + FRAME_RETURN_REG]
-    movzx edx, byte [eax + FRAME_WANT_RETS]
+    mov  [scratch_a], ecx
     movzx ebx, byte [eax + FRAME_POST]
     mov  [scratch_a + 12], ebx
-    ; scratch_a+4 already holds the actual return count; keep it in memory so
-    ; the copy body is free to clobber ebx for the value being moved.
-    mov  eax, edx                  ; wanted fixed count, 0 => all actual
-    test eax, eax
-    jnz  .lua_ret_copy_fixed
-    mov  eax, [scratch_a + 4]      ; want all -> ncopy = actual count
-.lua_ret_copy_fixed:
-    push eax                       ; ncopy/result slots requested
-    xor  edx, edx
-.lua_ret_copy_loop:
-    cmp  edx, eax
-    jae  .lua_ret_copy_done
-    cmp  edx, [scratch_a + 4]      ; i >= actual? -> pad with nil
-    jae  .lua_ret_pad_nil
-    push eax
-    mov  eax, [scratch_a]
-    add  eax, edx
-    lea  eax, [eax*8]
-    add  eax, [scratch_a + 8]      ; source callee R[A+i]
-    mov  [dest_tmp], eax
-    mov  ebx, [eax]
-    mov  eax, ecx
-    add  eax, edx
-    lea  eax, [ebp + eax*8]        ; destination caller R[return_reg+i]
-    mov  [eax], ebx
-    mov  ebx, [dest_tmp]
-    mov  ebx, [ebx + 4]
-    mov  [eax + 4], ebx
-    pop  eax
-    jmp  .lua_ret_next_slot
-.lua_ret_pad_nil:
-    push eax
-    mov  eax, ecx
-    add  eax, edx
-    mov  dword [ebp + eax*8], 0
-    mov  dword [ebp + eax*8 + 4], TAG_NIL
-    pop  eax
-.lua_ret_next_slot:
-    inc  edx
-    jmp  .lua_ret_copy_loop
-.lua_ret_copy_done:
-    pop  eax
-    add  eax, ecx
-    lea  edx, [ebp + eax*8]
-    mov  [edi + VM_TOP], edx
+    movzx edx, byte [eax + FRAME_WANT_RETS]
+    test edx, edx
+    jnz  .ret_want
+    mov  edx, [scratch_a + 4]      ; want all: as many as returned
+.ret_want:
+    ; Copy min(actual, want) values to caller R[return_reg..], pad the rest
+    ; with nil. The destination is below the source (the callee frame is
+    ; above R[return_reg]), so a forward copy is safe.
+    lea  ebx, [ebp + ecx*8]        ; destination
+    mov  ecx, [scratch_a + 4]
+    cmp  ecx, edx
+    jbe  .ret_count
+    mov  ecx, edx
+.ret_count:
+    sub  edx, ecx
+    mov  [scratch_a + 16], edx     ; nil padding
+    mov  eax, [scratch_a + 8]      ; source
+    test ecx, ecx
+    jz   .ret_pad
+.ret_copy:
+    mov  edx, [eax]
+    mov  [ebx], edx
+    mov  edx, [eax + 4]
+    mov  [ebx + 4], edx
+    add  eax, 8
+    add  ebx, 8
+    dec  ecx
+    jnz  .ret_copy
+.ret_pad:
+    mov  ecx, [scratch_a + 16]
+    test ecx, ecx
+    jz   .ret_done
+.ret_pad_loop:
+    mov  dword [ebx], 0
+    mov  dword [ebx + 4], TAG_NIL
+    add  ebx, 8
+    dec  ecx
+    jnz  .ret_pad_loop
+.ret_done:
+    mov  [edi + VM_TOP], ebx
     cmp  dword [scratch_a + 12], POST_NONE
     jne  .post
-    jmp  dispatch_next
+    NEXT
 .post:
-    ; A metamethod frame (__eq): make the result a boolean.
-    mov  ebx, ecx
+    ; A metamethod frame (__eq, __lt, __le): make the result a boolean.
+    mov  ebx, [scratch_a]
     mov  ecx, [scratch_a + 12]
     call fix_bool
-    jmp  dispatch_next
+    NEXT
 
 ; VARARG A B: copy the current frame's varargs into R[A..].
 ;   B == 0 : copy all `vararg_count` values, set top = &R[A+count].
@@ -1921,7 +2324,7 @@ op_vararg:
     mov  [scratch_a], ecx          ; dest reg A
     mov  [scratch_a + 4], edx      ; nwant
     ; source = &vararg_stack[vararg_base]
-    lea  ebx, [edi + VM_VARARG_STACK]
+    mov  ebx, [edi + VM_VARARGS]
     mov  eax, [edi + VM_VARARG_BASE]
     lea  ebx, [ebx + eax*8]        ; ebx = &varargs[0]
     mov  [scratch_a + 8], ebx
@@ -1954,7 +2357,106 @@ op_vararg:
     add  eax, [scratch_a + 4]
     lea  edx, [ebp + eax*8]
     mov  [edi + VM_TOP], edx
-    jmp  dispatch_next
+    NEXT
+
+; --- intrinsics (pure math builtins) -------------------------------------
+; A, RK(B)[, RK(C)]. A value that is not a number counts as 0, as in the
+; C builtins (arg_fp default).
+
+%macro MATH1 0                      ; out: eax = RK(B) as a number
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    mov  dl, al
+    LOAD_RK
+    jc   done
+    cmp  ecx, TAG_NUM
+    je   %%num
+    xor  eax, eax
+%%num:
+%endmacro
+
+%macro MATH2 0                      ; out: ebx = RK(B), eax = RK(C)
+    movzx ecx, ah
+    mov  [dest_tmp], ecx
+    shr  eax, 16
+    mov  dl, al
+    mov  dh, ah
+    LOAD_RK
+    jc   done
+    cmp  ecx, TAG_NUM
+    je   %%a
+    xor  eax, eax
+%%a:
+    push eax
+    mov  dl, dh
+    LOAD_RK
+    jc   err_rk_pop1
+    cmp  ecx, TAG_NUM
+    je   %%b
+    xor  eax, eax
+%%b:
+    pop  ebx
+%endmacro
+
+%macro STORE_NUM 0                  ; R[dest_tmp] = eax (number)
+    mov  ecx, [dest_tmp]
+    mov  [ebp + ecx*8], eax
+    mov  dword [ebp + ecx*8 + 4], TAG_NUM
+    NEXT
+%endmacro
+
+op_flr:
+    MATH1
+    and  eax, 0xffff0000
+    STORE_NUM
+
+op_ceil:
+    MATH1
+    test eax, 0xffff
+    jz   .whole
+    and  eax, 0xffff0000
+    add  eax, 0x10000
+.whole:
+    STORE_NUM
+
+op_abs:                             ; abs(-32768) saturates to 0x7fffffff
+    MATH1
+    cmp  eax, 0x80000000
+    je   .sat
+    test eax, eax
+    jns  .pos
+    neg  eax
+.pos:
+    STORE_NUM
+.sat:
+    mov  eax, 0x7fffffff
+    STORE_NUM
+
+op_sgn:                             ; sgn(0) = 1
+    MATH1
+    test eax, eax
+    mov  eax, 0x10000
+    jns  .pos
+    neg  eax
+.pos:
+    STORE_NUM
+
+op_min:
+    MATH2
+    cmp  ebx, eax
+    jge  .keep
+    mov  eax, ebx
+.keep:
+    STORE_NUM
+
+op_max:
+    MATH2
+    cmp  ebx, eax
+    jle  .keep
+    mov  eax, ebx
+.keep:
+    STORE_NUM
 
 ; --- metamethods -----------------------------------------------------------
 ; The C helpers in p386_meta.c find the handler. A Lua handler is not called
@@ -2027,12 +2529,12 @@ arith_meta:
     push eax                       ; event
     mov  edx, [esi - 4]
     shr  edx, 16                   ; dl = B, dh = C
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop1
     mov  [meta_ops], eax
     mov  [meta_ops + 4], ecx
     mov  dl, dh
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop1
     mov  [meta_ops + 8], eax
     mov  [meta_ops + 12], ecx
@@ -2060,19 +2562,8 @@ neg_meta:
     jmp  arith_meta_ops
 
 ; CONCAT failed (an operand is not a string or number): try __concat.
+; op_concat left both operands in meta_ops.
 concat_meta:
-    mov  edx, [esi - 4]
-    shr  edx, 16
-    movzx ebx, dl                  ; B
-    movzx edx, dh                  ; C
-    mov  eax, [ebp + ebx*8]
-    mov  [meta_ops], eax
-    mov  eax, [ebp + ebx*8 + 4]
-    mov  [meta_ops + 4], eax
-    mov  eax, [ebp + edx*8]
-    mov  [meta_ops + 8], eax
-    mov  eax, [ebp + edx*8 + 4]
-    mov  [meta_ops + 12], eax
     mov  eax, EV_CONCAT
     jmp  arith_meta_ops
 
@@ -2101,7 +2592,7 @@ bool_meta_ops:
     mov  ebx, [dest_tmp]           ; DONE: no handler (false) or a CFUNC
     mov  ecx, [meta_post]
     call fix_bool
-    jmp  dispatch_next
+    NEXT
 .call:
     mov  eax, [dest_tmp]
     mov  edx, 1
@@ -2116,12 +2607,12 @@ cmp_meta:
     push ecx
     mov  edx, [esi - 4]
     shr  edx, 16                   ; dl = B, dh = C
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop2
     mov  [meta_ops], eax
     mov  [meta_ops + 4], ecx
     mov  dl, dh
-    call load_rk
+    LOAD_RK
     jc   err_rk_pop2
     mov  [meta_ops + 8], eax
     mov  [meta_ops + 12], ecx
@@ -2225,6 +2716,28 @@ tailcall_meta:
     mov  edx, eax                  ; B = nargs + 1
     jmp  op_tailcall.lua_tail
 
+%ifdef PROFILE_OPS
+; Per-opcode cost (PROFOPS.EXE): instructions from one dispatch to the next
+; go to the opcode that ran, including the C helpers it called and a fixed
+; profiling overhead. In: edx = the opcode about to run. Keeps registers.
+prof_op:
+    push eax
+    push ecx
+    push edx
+    rdtsc
+    mov  ecx, eax
+    sub  eax, [prof_prev_t]
+    mov  [prof_prev_t], ecx
+    mov  ecx, [prof_prev_op]
+    add  [_p386_prof_op_cost + ecx*4], eax
+    pop  edx
+    mov  [prof_prev_op], edx
+    inc  dword [_p386_prof_op_count + edx*4]
+    pop  ecx
+    pop  eax
+    ret
+%endif
+
 op_unimpl:
     mov  dword [edi + VM_STATUS], ERR_UNIMPL
     mov  dword [edi + VM_ERROR_MSG], msg_unimpl
@@ -2303,6 +2816,8 @@ done_halted:
 done:
     mov  [edi + VM_BASE], ebp
     mov  [edi + VM_IP], esi
+    movzx eax, byte [esi - 4]      ; opcode of the last instruction run
+    mov  [edi + VM_LAST_OPCODE], eax
     mov  eax, [edi + VM_STATUS]
     pop  edi
     pop  esi

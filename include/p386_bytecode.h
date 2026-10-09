@@ -17,6 +17,7 @@
 #define P386_TAG_TAB   4UL
 #define P386_TAG_FUNC  5UL
 #define P386_TAG_CFUNC 6UL
+#define P386_TAG_THREAD 7UL   /* coroutine (runtime only, never a constant) */
 
 /* Opcodes. */
 #define P386_OP_MOVE      0x01
@@ -74,6 +75,25 @@
 #define P386_OP_TAILCALL  0x52
 #define P386_OP_RETURN    0x53
 #define P386_OP_VARARG    0x54
+/* Intrinsics: the compiler emits these for flr(x), ceil(x), abs(x),
+ * sgn(x), min(a,b), max(a,b) when the cart never assigns that global.
+ * A, RK(B)[, RK(C)]. A value that is not a number counts as 0, as in the
+ * builtins. */
+#define P386_OP_FLR       0x58
+#define P386_OP_CEIL      0x59
+#define P386_OP_ABS       0x5A
+#define P386_OP_SGN       0x5B
+#define P386_OP_MIN       0x5C
+#define P386_OP_MAX       0x5D
+/* Fused compare-and-branch: same operands as EQ..GE, always followed by a
+ * JMPF or JMPT on R[A]. The VM decides that jump without storing R[A]
+ * (R[A] is written only when a metamethod gives the result). */
+#define P386_OP_BEQ       0x60
+#define P386_OP_BNE       0x61
+#define P386_OP_BLT       0x62
+#define P386_OP_BLE       0x63
+#define P386_OP_BGT       0x64
+#define P386_OP_BGE       0x65
 
 #pragma pack(push, 1)
 typedef struct P386BcHeader {

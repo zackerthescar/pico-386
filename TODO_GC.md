@@ -1,3 +1,7 @@
+> **Status (2026-10-08): done.** The collector is in `src/p386_gc.c`; see BYTECODE.md §8a.
+> It differs from the plan below in two points: the header is placed before each object
+> (no layout changes), and collection runs only at safe points, never inside an allocation.
+
 # TODO: garbage collection
 
 hey dummy,

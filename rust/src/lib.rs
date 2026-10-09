@@ -56,11 +56,12 @@ pub extern "C" fn p8_compile(code: *const u8, len: u32) -> P8Program {
         return core::ptr::null_mut();
     }
     let slice = unsafe { core::slice::from_raw_parts(code, len as usize) };
-    let s = match core::str::from_utf8(slice) {
-        Ok(s) => s,
-        Err(_) => return core::ptr::null_mut(),
-    };
-    match pico386_core::compile(s) {
+    // Cart code uses the PICO-8 character set: one byte per character, and
+    // glyphs (⬅️, ❎, ★ ...) are bytes 0x80 and above. That is not UTF-8.
+    // Decode as Latin-1 (byte b -> char U+00b): it never fails and is
+    // lossless. String literals turn these chars back into the same bytes.
+    let s: alloc::string::String = slice.iter().map(|&b| b as char).collect();
+    match pico386_core::compile(&s) {
         Some(proto) => Box::into_raw(Box::new(proto)),
         None => core::ptr::null_mut(),
     }

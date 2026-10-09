@@ -65,6 +65,21 @@ pub const P386_OP_CALL: u8 = 0x51;
 pub const P386_OP_TAILCALL: u8 = 0x52;
 pub const P386_OP_RETURN: u8 = 0x53;
 pub const P386_OP_VARARG: u8 = 0x54;
+// Intrinsics for pure math builtins (see include/p386_bytecode.h).
+pub const P386_OP_FLR: u8 = 0x58;
+pub const P386_OP_CEIL: u8 = 0x59;
+pub const P386_OP_ABS: u8 = 0x5A;
+pub const P386_OP_SGN: u8 = 0x5B;
+pub const P386_OP_MIN: u8 = 0x5C;
+pub const P386_OP_MAX: u8 = 0x5D;
+// Fused compare-and-branch (see include/p386_bytecode.h): EQ..GE operands,
+// always followed by a JMPF/JMPT on R[A].
+pub const P386_OP_BEQ: u8 = 0x60;
+pub const P386_OP_BNE: u8 = 0x61;
+pub const P386_OP_BLT: u8 = 0x62;
+pub const P386_OP_BLE: u8 = 0x63;
+pub const P386_OP_BGT: u8 = 0x64;
+pub const P386_OP_BGE: u8 = 0x65;
 
 pub const P386_BUILTIN_PRINT: u8 = 0;
 pub const P386_BUILTIN_CLS: u8 = 1;
@@ -163,12 +178,22 @@ pub const P386_BUILTIN_RELOAD: u8 = 87;
 pub const P386_BUILTIN_CSTORE: u8 = 88;
 pub const P386_BUILTIN_SETMETATABLE: u8 = 89;
 pub const P386_BUILTIN_GETMETATABLE: u8 = 90;
-pub const P386_BUILTIN_COUNT: u8 = 91;
-pub const P386_GLOBAL_INIT: u8 = 91;
-pub const P386_GLOBAL_UPDATE: u8 = 92;
-pub const P386_GLOBAL_UPDATE60: u8 = 93;
-pub const P386_GLOBAL_DRAW: u8 = 94;
-pub const P386_USER_GLOBAL_BASE: u8 = 95;
+pub const P386_BUILTIN_COCREATE: u8 = 91;
+pub const P386_BUILTIN_CORESUME: u8 = 92;
+pub const P386_BUILTIN_COSTATUS: u8 = 93;
+pub const P386_BUILTIN_YIELD: u8 = 94;
+pub const P386_BUILTIN_T: u8 = 95;
+pub const P386_BUILTIN_MENUITEM: u8 = 96;
+pub const P386_BUILTIN_EXTCMD: u8 = 97;
+pub const P386_BUILTIN_CARTDATA: u8 = 98;
+pub const P386_BUILTIN_DGET: u8 = 99;
+pub const P386_BUILTIN_DSET: u8 = 100;
+pub const P386_BUILTIN_COUNT: u8 = 101;
+pub const P386_GLOBAL_INIT: u8 = 101;
+pub const P386_GLOBAL_UPDATE: u8 = 102;
+pub const P386_GLOBAL_UPDATE60: u8 = 103;
+pub const P386_GLOBAL_DRAW: u8 = 104;
+pub const P386_USER_GLOBAL_BASE: u8 = 105;
 /// Size of the VM globals array (GETGLOBAL/SETGLOBAL use a 16-bit Bx slot).
 pub const P386_GLOBAL_SLOTS: u16 = 1024;
 

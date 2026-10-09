@@ -36,6 +36,7 @@
             python3
             binutils
 	    unzip
+            curl
             imagemagick
           ];
           zlib1211 = pkgs.fetchurl {

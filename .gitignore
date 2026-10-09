@@ -8,6 +8,7 @@ zlib/
 *.log
 /*.png
 /*.ppm
+/test_logs/
 *.img
 .claude
 CLAUDE.md

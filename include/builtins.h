@@ -130,6 +130,20 @@ typedef enum P386BuiltinSlot {
     P386_BUILTIN_SETMETATABLE,
     P386_BUILTIN_GETMETATABLE,
 
+    /* ── coroutines ── */
+    P386_BUILTIN_COCREATE,
+    P386_BUILTIN_CORESUME,
+    P386_BUILTIN_COSTATUS,
+    P386_BUILTIN_YIELD,
+
+    /* ── system ── */
+    P386_BUILTIN_T,             /* time() under a second name */
+    P386_BUILTIN_MENUITEM,      /* no pause menu yet: ignored */
+    P386_BUILTIN_EXTCMD,        /* host commands: ignored */
+    P386_BUILTIN_CARTDATA,
+    P386_BUILTIN_DGET,
+    P386_BUILTIN_DSET,
+
     P386_BUILTIN_COUNT,
 
     /* Stable user-global slots the host runtime calls directly. */
